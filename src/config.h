@@ -8,7 +8,7 @@
 #include <cstdint>
 
 struct __attribute__((packed)) Config_body {
-    uint8_t config_version = 1; // Config Version
+    uint8_t config_version; // Config Version
     float haptics_gain; // [1.0,2.0]
     float speaker_volume; // [-100,0]
     uint8_t inactive_time; // [10,60] min
