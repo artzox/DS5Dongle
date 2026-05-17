@@ -123,7 +123,7 @@ jobs:
           cmake -S . -B build/wake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-            -DENABLE_WAKE_HID=ON
+            -DENABLE_WAKE_HID=ON \
             -DVERSION="$FIRMWARE_VERSION"
           cmake --build build/wake --target ds5-bridge
           cp build/wake/ds5-bridge.uf2 artifacts/ds5-bridge-wake.uf2
