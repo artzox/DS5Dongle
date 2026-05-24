@@ -116,6 +116,12 @@ target_compile_options(ds5-bridge PRIVATE -fsigned-char)
 target_compile_definitions(wdl_resampler PRIVATE
         WDL_RESAMPLE_TYPE=float
 )
+if(${SYS_CLOCK_KHZ_VALUE} GREATER 266000)
+    set(PICO_FLASH_SPI_CLKDIV 4)
+else()
+    set(PICO_FLASH_SPI_CLKDIV 2)
+endif()
+target_compile_definitions(bs2_default PRIVATE PICO_FLASH_SPI_CLKDIV=${PICO_FLASH_SPI_CLKDIV})
 target_compile_definitions(ds5-bridge PRIVATE
         CYW43_LWIP=0
         ENABLE_SERIAL=${ENABLE_SERIAL_VALUE}
