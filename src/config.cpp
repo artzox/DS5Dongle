@@ -96,6 +96,10 @@ void config_valid() {
         body->config_version = CONFIG_VERSION;
         printf("[Config] Warning: Config may breaking change\n");
     }
+    if (body->lock_volume > 1) {
+        body->lock_volume = 0;
+        printf("[Config] lock_volume is invalid\n");
+    }
 }
 
 void config_load() {

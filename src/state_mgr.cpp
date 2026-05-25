@@ -85,11 +85,11 @@ void state_update(const uint8_t *data, const uint8_t size) {
         2
     );
 
-    if (update.AllowHeadphoneVolume) {
+    if (!get_config().lock_volume && update.AllowHeadphoneVolume) {
         get_config().headset_volume = update.VolumeHeadphones;
         state.VolumeHeadphones = update.VolumeHeadphones;
     }
-    if (update.AllowSpeakerVolume) {
+    if (!get_config().lock_volume && update.AllowSpeakerVolume) {
         get_config().speaker_volume = update.VolumeSpeaker;
         state.VolumeSpeaker = update.VolumeSpeaker;
     }
@@ -133,11 +133,11 @@ void state_update(const uint8_t *data, const uint8_t size) {
         sizeof(uint8_t)
     );
     copy_if_allowed(
-        update.AllowAudioControl2,
+        !get_config().lock_volume && update.AllowAudioControl2,
         kAudioControl2Offset,
         sizeof(uint8_t)
     );
-    if (update.AllowAudioControl2) {
+    if (!get_config().lock_volume && update.AllowAudioControl2) {
         get_config().speaker_gain = update.SpeakerCompPreGain;
     }
     copy_if_allowed(
