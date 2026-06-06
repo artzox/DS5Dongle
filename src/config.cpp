@@ -39,10 +39,6 @@ void config_valid() {
         config.magic = CONFIG_MAGIC;
         printf("[Config] Config Magic Header is invalid\n");
     }
-    if (config.version != CONFIG_VERSION) {
-        config.version = CONFIG_VERSION;
-        printf("[Config] Config Version is invalid\n");
-    }
     if (config.size != sizeof(Config_body)) {
         config.size = sizeof(Config_body);
         printf("[Config] Config Body size is invalid\n");

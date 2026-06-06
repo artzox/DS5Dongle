@@ -26,7 +26,6 @@ struct __attribute__((packed)) Config_body {
 
 struct __attribute__((packed)) Config {
     uint32_t magic;
-    uint16_t version;
     uint32_t crc32; // Config_body crc32, only calc and verify when save
     uint16_t size;  // Config_body size
     Config_body body;
