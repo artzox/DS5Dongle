@@ -75,10 +75,22 @@ bool bt_disconnect() {
     if (acl_handle == HCI_CON_HANDLE_INVALID) {
         return false;
     }
-
-    // 0x13 = remote user terminated connection
     hci_send_cmd(&hci_disconnect, acl_handle, 0x13);
     return true;
+}
+
+bool bt_is_connected() {
+    return hid_interrupt_cid != 0;
+}
+
+void bt_set_scan_idle() {
+    gap_set_page_scan_activity(0x1000, 0x0012);
+    gap_inquiry_set_scan_activity(0x1000, 0x0012);
+}
+
+void bt_set_scan_active() {
+    gap_set_page_scan_activity(0x0800, 0x0012);
+    gap_inquiry_set_scan_activity(0x0800, 0x0012);
 }
 
 void bt_get_signal_strength(int8_t *rssi) {
