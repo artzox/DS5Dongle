@@ -304,5 +304,30 @@ int main() {
         battery_led_tick();
 #endif
         bt_inquiring_led();
+        // Reduce BT scan rate when idle to lower radio power
+        static bool last_connected = false;
+        const bool connected = bt_is_connected();
+        if (connected != last_connected) {
+            if (connected) bt_set_scan_active();
+            else bt_set_scan_idle();
+            last_connected = connected;
+        }
+
+        // Idle power saving via CPU duty-cycling (no clock changes - CYW43 safe).
+        // When no controller and no USB host, sleep the core 4ms per loop.
+        // The busy-poll loop is what burns power at 320MHz; halting the core
+        // ~99% of the time cuts dynamic power like a downclock would, without
+        // touching clk_sys / PLL / PIO. BTstack scan events tolerate this easily.
+        static absolute_time_t idle_since = nil_time;
+        const bool usb_active = tud_mounted();
+        if (!connected && !usb_active) {
+            if (is_nil_time(idle_since)) {
+                idle_since = make_timeout_time_ms(3000); // 3s grace after disconnect
+            } else if (absolute_time_diff_us(get_absolute_time(), idle_since) <= 0) {
+                sleep_ms(4); // core halts (WFE), wakes on timer
+            }
+        } else {
+            idle_since = nil_time;
+        }
     }
 }
