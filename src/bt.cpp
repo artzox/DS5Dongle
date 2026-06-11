@@ -44,6 +44,25 @@ static uint16_t hid_control_cid;
 static uint16_t hid_interrupt_cid;
 static bt_data_callback_t bt_data_callback = nullptr;
 static bool check_dse = false;
+// DSE profile unlock state: 0=idle, 1=waiting for controller to process 0x80,
+// 2=profiles prefetched, waiting briefly for responses before USB connect
+static int dse_unlock_phase = 0;
+static uint32_t dse_unlock_started_ms = 0;
+static uint32_t dse_profile_written_ms = 0;
+static int dse_profile_refresh_round = 0;
+// Paced profile prefetch sequencer: fetching all 12 profile reports as a
+// burst overflows the L2CAP control channel and silently drops requests
+// (observed as one profile "not assigned" after reconnect). One GET per
+// 80ms is reliable.
+static uint8_t dse_prefetch_next = 0;      // 0 = idle, else next report id
+static uint32_t dse_prefetch_last_ms = 0;
+static bool dse_prefetch_connect = false;  // tud_connect() when done
+
+static void dse_prefetch_start(bool connect_after) {
+    dse_prefetch_next = 0x70;
+    dse_prefetch_last_ms = 0;
+    dse_prefetch_connect = connect_after;
+}
 static int8_t bt_rssi = 0;
 unordered_map<uint8_t, vector<uint8_t> > feature_data;
 queue_t send_fifo;
@@ -75,6 +94,8 @@ bool bt_disconnect() {
     if (acl_handle == HCI_CON_HANDLE_INVALID) {
         return false;
     }
+
+    // 0x13 = remote user terminated connection
     hci_send_cmd(&hci_disconnect, acl_handle, 0x13);
     return true;
 }
@@ -439,9 +460,30 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t 
                     printf("Connected DSE Controller\n");
                     check_dse = false;
                     is_dse = true;
-#if !ENABLE_SERIAL
-                    tud_connect();
-#endif
+                    // --- DSE profile unlock sequence (mirrors native BT host) ---
+                    // 1) SET 0x65: echo of the 0x20 firmware report body, verbatim,
+                    //    no CRC recompute (native sends 63 bytes total).
+                    if (feature_data.contains(0x20) && feature_data[0x20].size() >= 62) {
+                        auto &fw = feature_data[0x20];
+                        uint8_t handshake[63];
+                        handshake[0] = 0x53;
+                        handshake[1] = 0x65;
+                        memcpy(handshake + 2, fw.data() + 1, 61);
+                        l2cap_send(hid_control_cid, handshake, sizeof(handshake));
+                    }
+                    // 2) SET 0x80 {0x70,0x01,...}: profile unlock. Must carry a valid
+                    //    CRC32 trailer or the controller rejects it with HANDSHAKE
+                    //    ERR_INVALID_PARAMETER (0x04). set_feature_data() appends it.
+                    uint8_t unlock[59]{};
+                    unlock[0] = 0x70;
+                    unlock[1] = 0x01;
+                    set_feature_data(0x80, unlock, sizeof(unlock));
+                    // 3) Defer tud_connect(): the controller needs ~3.5s to prepare
+                    //    profile data. dse_unlock_task() prefetches the profile
+                    //    reports once ready, then connects USB, so the PS app's very
+                    //    first read returns real data instead of a stale empty cache.
+                    dse_unlock_started_ms = to_ms_since_boot(get_absolute_time());
+                    dse_unlock_phase = 1;
                 } else if (packet[0] == 0x02) {
                     printf("Connected DS5 Controller\n");
                     check_dse = false;
@@ -457,6 +499,12 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t 
 #if ENABLE_VERBOSE
                 printf("[L2CAP] Stored Feature Report 0x%02X, len=%u\n", report_id, size - 1);
 #endif
+            }
+            // 1-byte HID HANDSHAKE from controller in response to SET commands:
+            // 0x00 = SUCCESS, 0x04 = ERR_INVALID_PARAMETER (command rejected)
+            if (size == 1 && (packet[0] & 0xF0) == 0x00) {
+                printf("[L2CAP] HID HANDSHAKE: 0x%02X (%s)\n", packet[0],
+                       packet[0] == 0x00 ? "success" : "rejected");
             }
 #if ENABLE_VERBOSE
             printf("[L2CAP] HID Control data len=%u\n", size);
@@ -605,7 +653,10 @@ vector<uint8_t> get_feature_data(uint8_t reportId, uint16_t len) {
         // DSE: Set Profile Save?
         reportId == 0x63 ||
         reportId == 0x65 ||
-        reportId == 0x64
+        reportId == 0x64 ||
+        // DSE profile slots: return cache, but refetch in background so the
+        // PS app's unlock(0x80) -> re-read flow sees fresh controller data
+        (reportId >= 0x70 && reportId <= 0x7B)
     ) {
         if (hid_control_cid != 0) {
             uint8_t get_feature[] = {0x43, reportId};
@@ -630,6 +681,14 @@ void set_feature_data(uint8_t reportId, uint8_t *data, uint16_t len) {
         printf("[L2CAP] Requesting Set Feature Report 0x%02X\n", reportId);
         printf_hexdump(get_feature, len + 2);
 #endif
+#ifdef DSE_POST_SAVE_REFRESH
+        // Variant B: single gentle refresh of profile read-back cache after
+        // a profile slot write, so the app's verify read sees committed data.
+        if (reportId >= 0x60 && reportId <= 0x62) {
+            dse_profile_written_ms = to_ms_since_boot(get_absolute_time());
+            dse_profile_refresh_round = 0;
+        }
+#endif
     }
 }
 
@@ -637,6 +696,84 @@ void bt_power_off_controller() {
     uint8_t bluetooth_control[47]{};
     bluetooth_control[0] = 0x02; // DualSense Bluetooth control: 1=on, 2=off.
     set_feature_data(0x08, bluetooth_control, sizeof(bluetooth_control));
+}
+
+// Drives the deferred DSE USB connect. Called from the main loop.
+// Phase 1: wait ~4.5s after the 0x80 unlock for the controller to prepare
+//          profile data (native capture shows ~3.4s), then prefetch all
+//          profile slot reports.
+// Phase 2: give the prefetch responses ~700ms to land in the cache, then
+//          tud_connect(). The PS app's first GET then returns real data.
+void dse_unlock_task() {
+    const uint32_t now = to_ms_since_boot(get_absolute_time());
+
+    // Paced prefetch sequencer: one profile GET per 80ms (burst sends drop
+    // requests on the L2CAP control channel -> profile shows "not assigned").
+    if (dse_prefetch_next != 0 && hid_control_cid != 0) {
+        if (now - dse_prefetch_last_ms >= 80) {
+            dse_prefetch_last_ms = now;
+            get_feature_data(dse_prefetch_next, 64);
+            if (dse_prefetch_next == 0x7B) {
+                dse_prefetch_next = 0; // done
+                if (dse_prefetch_connect) {
+                    dse_prefetch_connect = false;
+                    dse_unlock_phase = 2;
+                    dse_unlock_started_ms = now;
+                }
+            } else {
+                dse_prefetch_next++;
+            }
+        }
+    } else if (dse_prefetch_next != 0) {
+        dse_prefetch_next = 0; // controller gone
+        dse_prefetch_connect = false;
+    }
+
+#ifdef DSE_POST_SAVE_REFRESH
+    // Post-save snapshot regeneration, mirroring the PS app's own cycle:
+    //   SET 0x80  ->  poll GET 0x81 (x6, spaced)  ->  re-read profiles.
+    if (dse_profile_written_ms != 0 && hid_control_cid != 0) {
+        const uint32_t since_write = now - dse_profile_written_ms;
+        if (dse_profile_refresh_round == 0 && since_write >= 500) {
+            uint8_t unlock[63]{};
+            unlock[0] = 0x70;
+            unlock[1] = 0x01;
+            set_feature_data(0x80, unlock, sizeof(unlock));
+            dse_profile_refresh_round = 1;
+            printf("[DSE] Post-save: re-sent 0x80\n");
+        } else if (dse_profile_refresh_round >= 1 && dse_profile_refresh_round <= 6 &&
+                   since_write >= 1000 + 250u * (dse_profile_refresh_round - 1)) {
+            get_feature_data(0x81, 64); // status poll, mirrors app behavior
+            dse_profile_refresh_round++;
+        } else if (dse_profile_refresh_round == 7 && since_write >= 5500) {
+            dse_prefetch_start(false); // paced refetch of 0x70-0x7B
+            dse_profile_refresh_round = 8;
+            dse_profile_written_ms = 0;
+            printf("[DSE] Post-save: profile snapshot refetch started\n");
+        }
+    }
+#endif
+
+    if (dse_unlock_phase == 0) {
+        return;
+    }
+    if (hid_control_cid == 0) { // controller went away mid-unlock
+        dse_unlock_phase = 0;
+        return;
+    }
+    const uint32_t elapsed = now - dse_unlock_started_ms;
+    if (dse_unlock_phase == 1 && elapsed >= 4500) {
+        dse_prefetch_start(true); // paced prefetch, connect USB when done
+        dse_unlock_phase = 3;     // sequencer will advance to phase 2
+        printf("[DSE] Unlock wait done, prefetching profile reports\n");
+    } else if (dse_unlock_phase == 2 && elapsed >= 700) {
+        // 700ms after the last prefetch GET: responses have landed
+        dse_unlock_phase = 0;
+        printf("[DSE] Profile cache primed, connecting USB\n");
+#if !ENABLE_SERIAL
+        tud_connect();
+#endif
+    }
 }
 
 void init_feature() {
