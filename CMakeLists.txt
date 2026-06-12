@@ -166,148 +166,85 @@ add_custom_command(TARGET wdl_resampler POST_BUILD
     COMMENT "Phase A.2: relocating WDL_Resampler hot-path methods to .time_critical.*"
 )
 
-# Phase B.2: Move Tier-1 BT/USB hot-path functions to RAM via .time_critical
-# sections. These live in pristine SDK/submodule sources (btstack, cyw43-driver,
-# tinyusb) compiled directly into ds5-bridge, so they can't be annotated with
-# __not_in_flash_func at the source. Since -ffunction-sections is already on,
-# every function has its own .text.<name> section; we rename just the per-packet
-# hot functions to .time_critical.<name> on the compiled object files in a
-# PRE_LINK step (after compile, before link). The Pico SDK linker places
-# .time_critical.* in RAM (LMA flash, VMA RAM). objcopy silently skips a section
-# that is absent, so this stays idempotent across incremental relinks.
-# Object paths mirror the absolute source path under the target's .dir; every
-# source here lives under PICO_SDK_PATH.
-set(_b2_objdir ${CMAKE_BINARY_DIR}/CMakeFiles/ds5-bridge.dir${PICO_SDK_PATH})
-add_custom_command(TARGET ds5-bridge PRE_LINK
-    # btstack: central HCI packet dispatch (runs for every HCI event / ACL packet)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.packet_handler=.time_critical.bt_packet_handler
-        ${_b2_objdir}/lib/btstack/src/hci.c.o
-    # btstack: inbound L2CAP/ACL demux (carries the audio media channel)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.l2cap_acl_handler=.time_critical.l2cap_acl_handler
-        ${_b2_objdir}/lib/btstack/src/l2cap.c.o
-    # tinyusb: USB audio data is copied through these FIFOs
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.tu_fifo_read=.time_critical.tu_fifo_read
-        --rename-section .text.tu_fifo_read_n=.time_critical.tu_fifo_read_n
-        --rename-section .text.tu_fifo_write=.time_critical.tu_fifo_write
-        --rename-section .text.tu_fifo_write_n=.time_critical.tu_fifo_write_n
-        --rename-section .text.tu_fifo_count=.time_critical.tu_fifo_count
-        ${_b2_objdir}/lib/tinyusb/src/common/tusb_fifo.c.o
-    # cyw43: PIO-SPI transport to the BT/WiFi chip (every byte to/from the radio)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.cyw43_spi_transfer=.time_critical.cyw43_spi_transfer
-        --rename-section .text.cyw43_read_bytes=.time_critical.cyw43_read_bytes
-        --rename-section .text.cyw43_write_bytes=.time_critical.cyw43_write_bytes
-        --rename-section .text.cyw43_read_reg_u32=.time_critical.cyw43_read_reg_u32
-        --rename-section .text.cyw43_read_reg_u16=.time_critical.cyw43_read_reg_u16
-        --rename-section .text.cyw43_read_reg_u8=.time_critical.cyw43_read_reg_u8
-        --rename-section .text.cyw43_write_reg_u32=.time_critical.cyw43_write_reg_u32
-        --rename-section .text.cyw43_write_reg_u16=.time_critical.cyw43_write_reg_u16
-        --rename-section .text.cyw43_write_reg_u8=.time_critical.cyw43_write_reg_u8
-        --rename-section .text.read_reg_u32_swap=.time_critical.read_reg_u32_swap
-        --rename-section .text.write_reg_u32_swap=.time_critical.write_reg_u32_swap
-        --rename-section .text.ns_delay.constprop.0=.time_critical.cyw43_ns_delay
-        ${_b2_objdir}/src/rp2_common/pico_cyw43_driver/cyw43_bus_pio_spi.c.o
-    # cyw43: SDPCM packet pump (parses/sends radio packets, BT work check)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.cyw43_ll_sdpcm_poll_device=.time_critical.cyw43_ll_sdpcm_poll_device
-        --rename-section .text.cyw43_ll_process_packets=.time_critical.cyw43_ll_process_packets
-        --rename-section .text.cyw43_sdpcm_send_common=.time_critical.cyw43_sdpcm_send_common
-        --rename-section .text.cyw43_do_ioctl.part.0=.time_critical.cyw43_do_ioctl
-        --rename-section .text.cyw43_ll_bt_has_work=.time_critical.cyw43_ll_bt_has_work
-        --rename-section .text.cyw43_ll_parse_async_event=.time_critical.cyw43_ll_parse_async_event
-        ${_b2_objdir}/lib/cyw43-driver/src/cyw43_ll.c.o
-    # cyw43: poll loop + BT HCI read/write over the shared bus
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.cyw43_poll_func=.time_critical.cyw43_poll_func
-        --rename-section .text.cyw43_bluetooth_hci_read=.time_critical.cyw43_bluetooth_hci_read
-        --rename-section .text.cyw43_bluetooth_hci_write=.time_critical.cyw43_bluetooth_hci_write
-        ${_b2_objdir}/lib/cyw43-driver/src/cyw43_ctrl.c.o
-    COMMENT "Phase B.2: relocating Tier-1 BT/USB hot functions to .time_critical.* (RAM)"
-    VERBATIM
-)
+# Phases B.2-B.4: Move per-packet BT/USB hot-path functions that live in pristine
+# SDK/submodule sources (btstack, cyw43-driver, tinyusb, pico_util) into RAM. They
+# compile directly into ds5-bridge and can't take __not_in_flash_func at the source.
+# Since -ffunction-sections is on, each function has its own .text.<name> section;
+# relocate_to_ram() renames the hot ones to .time_critical.<name> on the compiled
+# objects in a PRE_LINK step (after compile, before link), and the Pico SDK linker
+# places .time_critical.* in RAM (LMA flash, VMA RAM). The helper locates each
+# object by its stable SDK-relative path SUFFIX, because the object's path under the
+# target's .dir differs by environment (in-tree pico-sdk in CI vs out-of-tree
+# locally). RENAMES are |-separated old=new pairs; objcopy skips an absent section,
+# so this is idempotent across incremental relinks.
+function(relocate_to_ram _suffix _renames _comment)
+    add_custom_command(TARGET ds5-bridge PRE_LINK
+        COMMAND ${CMAKE_COMMAND}
+            "-DOBJROOT=${CMAKE_BINARY_DIR}/CMakeFiles/ds5-bridge.dir"
+            "-DOBJCOPY=${CMAKE_OBJCOPY}"
+            "-DSUFFIX=${_suffix}"
+            "-DRENAMES=${_renames}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/relocate_to_ram.cmake"
+        COMMENT "${_comment}"
+        VERBATIM)
+endfunction()
 
-# Phase B.3: Tier-2 relocation -- the run-loop TX pumps and per-transfer submit
-# paths. Same PRE_LINK objcopy mechanism as B.2. These fire every btstack/USB
-# run-loop iteration (outbound ACL/L2CAP, USB task) or per audio transfer rather
-# than strictly per received byte, so they are a notch less hot than Tier 1 but
-# still on the audio path. state_update is intentionally NOT moved: it runs on
-# the host->controller HID-OUT (rumble/LED) path, not the audio frame path, so
-# it stays in flash to preserve RAM headroom.
-add_custom_command(TARGET ds5-bridge PRE_LINK
-    # btstack: HCI TX/state pump + outbound ACL (speaker/haptics) fragmentation
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.hci_run=.time_critical.hci_run
-        --rename-section .text.hci_send_acl_packet_fragments=.time_critical.hci_send_acl_packet_fragments
-        --rename-section .text.hci_send_acl_packet_buffer=.time_critical.hci_send_acl_packet_buffer
-        ${_b2_objdir}/lib/btstack/src/hci.c.o
-    # btstack: L2CAP TX pump + outbound send paths
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.l2cap_run=.time_critical.l2cap_run
-        --rename-section .text.l2cap_send=.time_critical.l2cap_send
-        --rename-section .text.l2cap_send_prepared=.time_critical.l2cap_send_prepared
-        --rename-section .text.l2cap_notify_channel_can_send=.time_critical.l2cap_notify_channel_can_send
-        ${_b2_objdir}/lib/btstack/src/l2cap.c.o
-    # cyw43: backplane mem/reg accessors used inside the SDPCM/ioctl packet path
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.cyw43_ll_write_backplane_mem=.time_critical.cyw43_ll_write_backplane_mem
-        --rename-section .text.cyw43_ll_read_backplane_mem=.time_critical.cyw43_ll_read_backplane_mem
-        --rename-section .text.cyw43_write_backplane=.time_critical.cyw43_write_backplane
-        --rename-section .text.cyw43_read_backplane.constprop.0=.time_critical.cyw43_read_backplane
-        ${_b2_objdir}/lib/cyw43-driver/src/cyw43_ll.c.o
-    # tinyusb: USB device task pump + endpoint transfer submit
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.tud_task_ext=.time_critical.tud_task_ext
-        --rename-section .text.usbd_edpt_xfer=.time_critical.usbd_edpt_xfer
-        --rename-section .text.usbd_edpt_xfer_fifo=.time_critical.usbd_edpt_xfer_fifo
-        ${_b2_objdir}/lib/tinyusb/src/device/usbd.c.o
-    # tinyusb: RP2350 DCD per-transfer submit + iso endpoint activation
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.dcd_edpt_xfer=.time_critical.dcd_edpt_xfer
-        --rename-section .text.dcd_edpt_iso_activate=.time_critical.dcd_edpt_iso_activate
-        ${_b2_objdir}/lib/tinyusb/src/portable/raspberrypi/rp2040/dcd_rp2040.c.o
-    # tinyusb: audio class data path (read/write, TX packet sizing, xfer ISR)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.tud_audio_n_read=.time_critical.tud_audio_n_read
-        --rename-section .text.tud_audio_n_write=.time_critical.tud_audio_n_write
-        --rename-section .text.audiod_calc_tx_packet_sz.isra.0=.time_critical.audiod_calc_tx_packet_sz
-        --rename-section .text.audiod_xfer_isr=.time_critical.audiod_xfer_isr
-        ${_b2_objdir}/lib/tinyusb/src/class/audio/audio_device.c.o
-    COMMENT "Phase B.3: relocating Tier-2 BT/USB pump + transfer paths to .time_critical.* (RAM)"
-    VERBATIM
-)
+# --- Phase B.2: Tier-1 -- per-packet BT receive + USB FIFO data path ---
+relocate_to_ram(lib/btstack/src/hci.c.o
+    ".text.packet_handler=.time_critical.bt_packet_handler"
+    "Phase B.2: hci.c packet_handler -> RAM")
+relocate_to_ram(lib/btstack/src/l2cap.c.o
+    ".text.l2cap_acl_handler=.time_critical.l2cap_acl_handler"
+    "Phase B.2: l2cap.c l2cap_acl_handler -> RAM")
+relocate_to_ram(lib/tinyusb/src/common/tusb_fifo.c.o
+    ".text.tu_fifo_read=.time_critical.tu_fifo_read|.text.tu_fifo_read_n=.time_critical.tu_fifo_read_n|.text.tu_fifo_write=.time_critical.tu_fifo_write|.text.tu_fifo_write_n=.time_critical.tu_fifo_write_n|.text.tu_fifo_count=.time_critical.tu_fifo_count"
+    "Phase B.2: tusb_fifo.c data path -> RAM")
+relocate_to_ram(src/rp2_common/pico_cyw43_driver/cyw43_bus_pio_spi.c.o
+    ".text.cyw43_spi_transfer=.time_critical.cyw43_spi_transfer|.text.cyw43_read_bytes=.time_critical.cyw43_read_bytes|.text.cyw43_write_bytes=.time_critical.cyw43_write_bytes|.text.cyw43_read_reg_u32=.time_critical.cyw43_read_reg_u32|.text.cyw43_read_reg_u16=.time_critical.cyw43_read_reg_u16|.text.cyw43_read_reg_u8=.time_critical.cyw43_read_reg_u8|.text.cyw43_write_reg_u32=.time_critical.cyw43_write_reg_u32|.text.cyw43_write_reg_u16=.time_critical.cyw43_write_reg_u16|.text.cyw43_write_reg_u8=.time_critical.cyw43_write_reg_u8|.text.read_reg_u32_swap=.time_critical.read_reg_u32_swap|.text.write_reg_u32_swap=.time_critical.write_reg_u32_swap|.text.ns_delay.constprop.0=.time_critical.cyw43_ns_delay"
+    "Phase B.2: cyw43 PIO-SPI transport -> RAM")
+relocate_to_ram(lib/cyw43-driver/src/cyw43_ll.c.o
+    ".text.cyw43_ll_sdpcm_poll_device=.time_critical.cyw43_ll_sdpcm_poll_device|.text.cyw43_ll_process_packets=.time_critical.cyw43_ll_process_packets|.text.cyw43_sdpcm_send_common=.time_critical.cyw43_sdpcm_send_common|.text.cyw43_do_ioctl.part.0=.time_critical.cyw43_do_ioctl|.text.cyw43_ll_bt_has_work=.time_critical.cyw43_ll_bt_has_work|.text.cyw43_ll_parse_async_event=.time_critical.cyw43_ll_parse_async_event"
+    "Phase B.2: cyw43 SDPCM pump -> RAM")
+relocate_to_ram(lib/cyw43-driver/src/cyw43_ctrl.c.o
+    ".text.cyw43_poll_func=.time_critical.cyw43_poll_func|.text.cyw43_bluetooth_hci_read=.time_critical.cyw43_bluetooth_hci_read|.text.cyw43_bluetooth_hci_write=.time_critical.cyw43_bluetooth_hci_write"
+    "Phase B.2: cyw43 poll + BT HCI bus -> RAM")
 
-# Phase B.4: Input-report path tail. The controller->host report path is now
-# almost entirely in RAM; these are the small remaining flash functions on it.
-# Cheap to move (~0.6 KiB) and removes any residual XIP miss when the cache was
-# evicted by heavy flash activity (config write, BT reconnect). queue_try_* also
-# back the audio inter-core FIFOs. Same PRE_LINK objcopy mechanism as B.2/B.3.
-add_custom_command(TARGET ds5-bridge PRE_LINK
-    # tinyusb HID: per-report submit, readiness check, xfer-complete callback
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.tud_hid_n_report=.time_critical.tud_hid_n_report
-        --rename-section .text.tud_hid_n_ready=.time_critical.tud_hid_n_ready
-        --rename-section .text.hidd_xfer_cb=.time_critical.hidd_xfer_cb
-        ${_b2_objdir}/lib/tinyusb/src/class/hid/hid_device.c.o
-    # pico_util: inter-core FIFO add/remove (input send_fifo + audio queues)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.queue_try_add=.time_critical.queue_try_add
-        --rename-section .text.queue_try_remove=.time_critical.queue_try_remove
-        ${_b2_objdir}/src/common/pico_util/queue.c.o
-    # pico_cyw43_arch: per-loop BT/WiFi poll entry
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.cyw43_arch_poll=.time_critical.cyw43_arch_poll
-        ${_b2_objdir}/src/rp2_common/pico_cyw43_arch/cyw43_arch.c.o
-    # btstack: run-loop data-source poll (drives BT servicing each iteration)
-    COMMAND ${CMAKE_OBJCOPY}
-        --rename-section .text.btstack_run_loop_base_poll_data_sources=.time_critical.btstack_run_loop_base_poll_data_sources
-        --rename-section .text.btstack_run_loop_poll_data_sources_from_irq=.time_critical.btstack_run_loop_poll_data_sources_from_irq
-        ${_b2_objdir}/lib/btstack/src/btstack_run_loop.c.o
-    COMMENT "Phase B.4: relocating input-report path tail to .time_critical.* (RAM)"
-    VERBATIM
-)
+# --- Phase B.3: Tier-2 -- run-loop TX pumps + per-transfer submit paths ---
+# state_update is intentionally NOT moved: it runs on the host->controller HID-OUT
+# (rumble/LED) path, not the audio frame path, so it stays in flash for headroom.
+relocate_to_ram(lib/btstack/src/hci.c.o
+    ".text.hci_run=.time_critical.hci_run|.text.hci_send_acl_packet_fragments=.time_critical.hci_send_acl_packet_fragments|.text.hci_send_acl_packet_buffer=.time_critical.hci_send_acl_packet_buffer"
+    "Phase B.3: hci.c TX pump + ACL out -> RAM")
+relocate_to_ram(lib/btstack/src/l2cap.c.o
+    ".text.l2cap_run=.time_critical.l2cap_run|.text.l2cap_send=.time_critical.l2cap_send|.text.l2cap_send_prepared=.time_critical.l2cap_send_prepared|.text.l2cap_notify_channel_can_send=.time_critical.l2cap_notify_channel_can_send"
+    "Phase B.3: l2cap.c TX pump + sends -> RAM")
+relocate_to_ram(lib/cyw43-driver/src/cyw43_ll.c.o
+    ".text.cyw43_ll_write_backplane_mem=.time_critical.cyw43_ll_write_backplane_mem|.text.cyw43_ll_read_backplane_mem=.time_critical.cyw43_ll_read_backplane_mem|.text.cyw43_write_backplane=.time_critical.cyw43_write_backplane|.text.cyw43_read_backplane.constprop.0=.time_critical.cyw43_read_backplane"
+    "Phase B.3: cyw43 backplane accessors -> RAM")
+relocate_to_ram(lib/tinyusb/src/device/usbd.c.o
+    ".text.tud_task_ext=.time_critical.tud_task_ext|.text.usbd_edpt_xfer=.time_critical.usbd_edpt_xfer|.text.usbd_edpt_xfer_fifo=.time_critical.usbd_edpt_xfer_fifo"
+    "Phase B.3: usbd.c task pump + xfer -> RAM")
+relocate_to_ram(lib/tinyusb/src/portable/raspberrypi/rp2040/dcd_rp2040.c.o
+    ".text.dcd_edpt_xfer=.time_critical.dcd_edpt_xfer|.text.dcd_edpt_iso_activate=.time_critical.dcd_edpt_iso_activate"
+    "Phase B.3: dcd_rp2040.c submit + iso -> RAM")
+relocate_to_ram(lib/tinyusb/src/class/audio/audio_device.c.o
+    ".text.tud_audio_n_read=.time_critical.tud_audio_n_read|.text.tud_audio_n_write=.time_critical.tud_audio_n_write|.text.audiod_calc_tx_packet_sz.isra.0=.time_critical.audiod_calc_tx_packet_sz|.text.audiod_xfer_isr=.time_critical.audiod_xfer_isr"
+    "Phase B.3: audio_device.c data path -> RAM")
+
+# --- Phase B.4: input-report path tail (controller -> host) ---
+# queue_try_* also back the audio inter-core FIFOs, so this helps both paths.
+relocate_to_ram(lib/tinyusb/src/class/hid/hid_device.c.o
+    ".text.tud_hid_n_report=.time_critical.tud_hid_n_report|.text.tud_hid_n_ready=.time_critical.tud_hid_n_ready|.text.hidd_xfer_cb=.time_critical.hidd_xfer_cb"
+    "Phase B.4: hid_device.c report path -> RAM")
+relocate_to_ram(src/common/pico_util/queue.c.o
+    ".text.queue_try_add=.time_critical.queue_try_add|.text.queue_try_remove=.time_critical.queue_try_remove"
+    "Phase B.4: pico_util queue add/remove -> RAM")
+relocate_to_ram(src/rp2_common/pico_cyw43_arch/cyw43_arch.c.o
+    ".text.cyw43_arch_poll=.time_critical.cyw43_arch_poll"
+    "Phase B.4: cyw43_arch_poll -> RAM")
+relocate_to_ram(lib/btstack/src/btstack_run_loop.c.o
+    ".text.btstack_run_loop_base_poll_data_sources=.time_critical.btstack_run_loop_base_poll_data_sources|.text.btstack_run_loop_poll_data_sources_from_irq=.time_critical.btstack_run_loop_poll_data_sources_from_irq"
+    "Phase B.4: btstack run-loop poll -> RAM")
 
 target_compile_options(ds5-bridge PRIVATE -fsigned-char)
 target_compile_definitions(wdl_resampler PRIVATE
