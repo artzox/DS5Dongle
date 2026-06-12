@@ -254,8 +254,8 @@ relocate_to_ram(lib/btstack/src/btstack_run_loop.c.o
 # bootrom no longer exports ROM_FUNC_MEMCPY/MEMSET), so src/ram_mem.c provides
 # RAM-resident (.time_critical) overrides instead. Built with -fno-builtin and
 # -fno-tree-loop-distribute-patterns so the compiler does not turn the copy loops
-# back into calls to memcpy/memset (which would self-recurse). This removes the
-# dominant remaining flash hazard for a gateless BOOTSEL poll.
+# back into calls to memcpy/memset (which would self-recurse). This completes the
+# move of core1's audio loop into RAM (no per-frame XIP fetches left on core1).
 # NOTE: re-validate audio at 150 MHz, since these replace newlib's mem ops.
 set_source_files_properties(src/ram_mem.c PROPERTIES COMPILE_OPTIONS
         "-fno-builtin;-fno-tree-loop-distribute-patterns")

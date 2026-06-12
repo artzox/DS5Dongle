@@ -5,8 +5,8 @@
 // bootrom mem-ops variant does not link -- RP2350's bootrom no longer exports
 // ROM_FUNC_MEMCPY/MEMSET). core1's audio loop calls these every frame, directly
 // and inside libopus, so without RAM copies core1 still executes flash code
-// during steady-state audio. That breaks a gateless BOOTSEL poll, where the QSPI
-// CSn line is briefly floated and any flash fetch on the other core corrupts.
+// during steady-state audio. These overrides complete the move of core1's audio
+// loop fully into RAM, removing the last per-frame XIP fetches on that core.
 //
 // These strong definitions override the newlib ones at link time and are placed
 // in .time_critical (RAM) via __not_in_flash_func. The translation unit MUST be
