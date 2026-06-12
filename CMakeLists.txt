@@ -279,6 +279,36 @@ add_custom_command(TARGET ds5-bridge PRE_LINK
     VERBATIM
 )
 
+# Phase B.4: Input-report path tail. The controller->host report path is now
+# almost entirely in RAM; these are the small remaining flash functions on it.
+# Cheap to move (~0.6 KiB) and removes any residual XIP miss when the cache was
+# evicted by heavy flash activity (config write, BT reconnect). queue_try_* also
+# back the audio inter-core FIFOs. Same PRE_LINK objcopy mechanism as B.2/B.3.
+add_custom_command(TARGET ds5-bridge PRE_LINK
+    # tinyusb HID: per-report submit, readiness check, xfer-complete callback
+    COMMAND ${CMAKE_OBJCOPY}
+        --rename-section .text.tud_hid_n_report=.time_critical.tud_hid_n_report
+        --rename-section .text.tud_hid_n_ready=.time_critical.tud_hid_n_ready
+        --rename-section .text.hidd_xfer_cb=.time_critical.hidd_xfer_cb
+        ${_b2_objdir}/lib/tinyusb/src/class/hid/hid_device.c.o
+    # pico_util: inter-core FIFO add/remove (input send_fifo + audio queues)
+    COMMAND ${CMAKE_OBJCOPY}
+        --rename-section .text.queue_try_add=.time_critical.queue_try_add
+        --rename-section .text.queue_try_remove=.time_critical.queue_try_remove
+        ${_b2_objdir}/src/common/pico_util/queue.c.o
+    # pico_cyw43_arch: per-loop BT/WiFi poll entry
+    COMMAND ${CMAKE_OBJCOPY}
+        --rename-section .text.cyw43_arch_poll=.time_critical.cyw43_arch_poll
+        ${_b2_objdir}/src/rp2_common/pico_cyw43_arch/cyw43_arch.c.o
+    # btstack: run-loop data-source poll (drives BT servicing each iteration)
+    COMMAND ${CMAKE_OBJCOPY}
+        --rename-section .text.btstack_run_loop_base_poll_data_sources=.time_critical.btstack_run_loop_base_poll_data_sources
+        --rename-section .text.btstack_run_loop_poll_data_sources_from_irq=.time_critical.btstack_run_loop_poll_data_sources_from_irq
+        ${_b2_objdir}/lib/btstack/src/btstack_run_loop.c.o
+    COMMENT "Phase B.4: relocating input-report path tail to .time_critical.* (RAM)"
+    VERBATIM
+)
+
 target_compile_options(ds5-bridge PRIVATE -fsigned-char)
 target_compile_definitions(wdl_resampler PRIVATE
         WDL_RESAMPLE_TYPE=float
