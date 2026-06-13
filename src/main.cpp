@@ -22,6 +22,7 @@
 #endif
 #include "config.h"
 #include "cmd.h"
+#include "dse.h"
 #if ENABLE_BATT_LED
 #include "battery_led.h"
 #endif
@@ -149,10 +150,10 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
         return pico_cmd_get(report_id, buffer, reqlen);
     }
 
-    // DSE profiles: while the unlock+prefetch is still in progress, return 0
+    // DSE profiles: while the unlock + prefetch is still in progress, return 0
     // (NAK) for profile reads so the PS app retries rather than caching an
-    // empty snapshot. Still kick off the background BT fetch via get_feature_data.
-    if (report_id >= 0x70 && report_id <= 0x7B && !bt_dse_profiles_ready()) {
+    // empty snapshot. Still kick off the background BT fetch.
+    if (dse_is_profile_report(report_id) && !dse_profiles_ready()) {
         get_feature_data(report_id, reqlen);
         return 0;
     }
@@ -312,31 +313,6 @@ int main() {
         battery_led_tick();
 #endif
         bt_inquiring_led();
-        dse_unlock_task();
-        // Reduce BT scan rate when controller disconnected to lower radio power.
-        // Doubles page/inquiry scan interval (0x0800 -> 0x1000) while idle.
-        static bool last_connected = false;
-        const bool connected = bt_is_connected();
-        if (connected != last_connected) {
-            if (connected) bt_set_scan_active();
-            else bt_set_scan_idle();
-            last_connected = connected;
-        }
-
-        // Idle power saving via CPU duty-cycling (no clock changes - CYW43 safe).
-        // The busy-poll loop is what burns power at 320MHz; halting the core
-        // ~99% of the time cuts dynamic power like a downclock would, without
-        // touching clk_sys / PLL / PIO. BTstack scan events tolerate this easily.
-        static absolute_time_t idle_since = nil_time;
-        const bool usb_active = tud_mounted();
-        if (!connected && !usb_active) {
-            if (is_nil_time(idle_since)) {
-                idle_since = make_timeout_time_ms(3000); // 3s grace after disconnect
-            } else if (absolute_time_diff_us(get_absolute_time(), idle_since) <= 0) {
-                sleep_ms(4); // core halts (WFE), wakes on timer
-            }
-        } else {
-            idle_since = nil_time;
-        }
+        dse_task();
     }
 }
