@@ -109,6 +109,7 @@ add_executable(ds5-bridge
         src/usb.cpp
         src/audio.cpp
         src/bt.cpp
+        src/dse.cpp
         src/config.cpp
         src/cmd.cpp
         src/state_mgr.cpp
