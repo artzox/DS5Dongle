@@ -149,6 +149,14 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
         return pico_cmd_get(report_id, buffer, reqlen);
     }
 
+    // DSE profiles: while the unlock+prefetch is still in progress, return 0
+    // (NAK) for profile reads so the PS app retries rather than caching an
+    // empty snapshot. Still kick off the background BT fetch via get_feature_data.
+    if (report_id >= 0x70 && report_id <= 0x7B && !bt_dse_profiles_ready()) {
+        get_feature_data(report_id, reqlen);
+        return 0;
+    }
+
     std::vector<uint8_t> feature_data = get_feature_data(report_id, reqlen);
     if (!feature_data.empty()) {
         memcpy(buffer, feature_data.data() + 1, feature_data.size() - 1);
@@ -304,7 +312,9 @@ int main() {
         battery_led_tick();
 #endif
         bt_inquiring_led();
-        // Reduce BT scan rate when idle to lower radio power
+        dse_unlock_task();
+        // Reduce BT scan rate when controller disconnected to lower radio power.
+        // Doubles page/inquiry scan interval (0x0800 -> 0x1000) while idle.
         static bool last_connected = false;
         const bool connected = bt_is_connected();
         if (connected != last_connected) {
@@ -314,7 +324,6 @@ int main() {
         }
 
         // Idle power saving via CPU duty-cycling (no clock changes - CYW43 safe).
-        // When no controller and no USB host, sleep the core 4ms per loop.
         // The busy-poll loop is what burns power at 320MHz; halting the core
         // ~99% of the time cuts dynamic power like a downclock would, without
         // touching clk_sys / PLL / PIO. BTstack scan events tolerate this easily.
