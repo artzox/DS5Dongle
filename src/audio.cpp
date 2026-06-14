@@ -18,6 +18,8 @@
 #include "opus.h"
 #include "utils.h"
 #include "pico/multicore.h"
+#include "pico/platform.h"
+#include "pico/flash.h"
 #include "pico/util/queue.h"
 #include "config.h"
 #include "state_mgr.h"
@@ -30,6 +32,9 @@
 #define REPORT_ID         0x36
 // #define VOLUME_GAIN       2
 // #define BUFFER_LENGTH     48
+#define MIC_CHANNELS      1
+#define MIC_FRAMES        480
+#define MIC_OPUS_SIZE     71   // bytes per opus-encoded mic frame from the DualSense
 
 using std::clamp;
 using std::max;
@@ -38,20 +43,65 @@ static WDL_Resampler resampler;
 static uint8_t reportSeqCounter = 0;
 static uint8_t packetCounter = 0;
 static bool plug_headset = false;
+static bool mic_active = false; // host has opened the mic IN interface (alt != 0)
 alignas(8) static uint32_t audio_core1_stack[8192];
 queue_t audio_fifo;
+queue_t mic_fifo;
+queue_t mic_decode_fifo;
 static uint8_t opus_buf[200];
 critical_section_t opus_cs;
 
 struct audio_raw_element {
     float data[512 * 2];
 };
+struct mic_element {
+    uint8_t data[MIC_OPUS_SIZE];
+};
+struct mic_decode_element {
+    int16_t data[MIC_FRAMES * MIC_CHANNELS];
+    uint16_t len;
+};
 
 void set_headset(bool state) {
     plug_headset = state;
 }
 
-void audio_loop() {
+// Called from tud_audio_set_itf_cb when the host opens/closes the mic IN
+// interface. Gates controller-mic streaming so it only runs while recording.
+void set_mic_active(bool active) {
+    mic_active = active;
+}
+
+bool audio_mic_active() {
+    return mic_active;
+}
+
+void __not_in_flash_func(audio_loop)() {
+    // Mic playback: drain decoded mic PCM into the USB IN endpoint
+    static mic_decode_element mic_pb{};
+    if (queue_try_remove(&mic_decode_fifo, &mic_pb)) {
+        // The controller mic is mono, but the USB descriptor presents a 2-channel
+        // mic (matching the real DS5) so Windows doesn't conflict with its cached
+        // DS5 audio format. Duplicate each mono sample into L and R.
+        static int16_t mic_stereo[MIC_FRAMES * 2];
+        const int mono_samples = mic_pb.len / 2;
+        for (int i = 0; i < mono_samples; i++) {
+            mic_stereo[2 * i] = mic_pb.data[i];
+            mic_stereo[2 * i + 1] = mic_pb.data[i];
+        }
+        const uint16_t stereo_len = (uint16_t) (mono_samples * 2 * 2);
+        uint16_t written = tud_audio_write(mic_stereo, stereo_len);
+        if (written != stereo_len) {
+            // Gated behind ENABLE_VERBOSE: when the host has not opened the mic
+            // interface (the common case -- most games never do) tud_audio_write
+            // short-writes every frame, so an unconditional log would flood
+            // core0's hot path with the newlib formatting chain.
+#if ENABLE_VERBOSE
+            printf("[Audio] Warning: USB mic FIFO wrote %u/%u bytes\n", written, stereo_len);
+#endif
+        }
+    }
+
     // 1. 读取 USB 音频数据
     if (!tud_audio_available()) return;
 
@@ -115,7 +165,12 @@ void audio_loop() {
         reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
         pkt[2] = 0x11 | 0 << 6 | 1 << 7;
         pkt[3] = 7;
-        pkt[4] = 0b11111110;
+        // bit0 enables controller mic streaming. Gate it on the host actually
+        // opening the mic IN interface (set_mic_active from tud_audio_set_itf_cb)
+        // AND on the user not disabling the mic (config.disable_mic), so the
+        // DualSense only streams mic audio -- and core1 only decodes it -- while
+        // an app is recording. Other bits (speaker/haptics) stay enabled.
+        pkt[4] = (mic_active && !get_config().disable_mic) ? 0b11111111 : 0b11111110;
         const auto buf_len = get_config().audio_buffer_length;
         pkt[5] = buf_len;
         pkt[6] = buf_len;
@@ -132,15 +187,19 @@ void audio_loop() {
         pkt[77] = SAMPLE_SIZE;
         memcpy(pkt + 78, haptic_buf, SAMPLE_SIZE);
 #if !DISABLE_SPEAKER_PROC
-        // Speaker Audio Data
-        pkt[142] = (plug_headset ? 0x16 : 0x13) | 0 << 6 | 1 << 7; // Speaker: 0x13
-        // L Headset Mono: 0x14
-        // L Headset R Speaker: 0x15
-        // Headset: 0x16
-        pkt[143] = 200;
-        critical_section_enter_blocking(&opus_cs);
-        memcpy(pkt + 144, opus_buf, 200);
-        critical_section_exit(&opus_cs);
+        // Speaker Audio Data -- omitted entirely when the user disables the
+        // speaker/headset (config.disable_speaker), so the controller's speaker
+        // amp isn't driven (mirrors the Pico W no-speaker report).
+        if (!get_config().disable_speaker) {
+            pkt[142] = (plug_headset ? 0x16 : 0x13) | 0 << 6 | 1 << 7; // Speaker: 0x13
+            // L Headset Mono: 0x14
+            // L Headset R Speaker: 0x15
+            // Headset: 0x16
+            pkt[143] = 200;
+            critical_section_enter_blocking(&opus_cs);
+            memcpy(pkt + 144, opus_buf, 200);
+            critical_section_exit(&opus_cs);
+        }
 #endif
 
         bt_write(pkt, sizeof(pkt));
@@ -153,6 +212,10 @@ void audio_init() {
     resampler.SetRates(48000, 3000);
     resampler.SetFeedMode(true);
     resampler.Prealloc(2, 24, 6);
+    // Mic queues are read from audio_loop on core0 every iteration, so they
+    // must exist regardless of the speaker-proc build flag.
+    queue_init(&mic_fifo, sizeof(mic_element), 2);
+    queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
 #if !DISABLE_SPEAKER_PROC
     queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
     critical_section_init(&opus_cs);
@@ -161,9 +224,65 @@ void audio_init() {
 }
 
 static OpusEncoder *encoder;
+static OpusDecoder *decoder; // mic decoder
 static WDL_Resampler resampler_audio;
 
-void core1_entry() {
+// Speaker path: USB OUT PCM (core0 audio_fifo) -> resample -> opus encode ->
+// opus_buf for the haptics/speaker BT report. Non-blocking so core1 can also
+// service the mic path. Kept in RAM to remove XIP miss latency from the loop.
+static void __not_in_flash_func(speaker_proc)() {
+    static audio_raw_element audio_element{};
+    if (!queue_try_remove(&audio_fifo, &audio_element)) {
+        return;
+    }
+    // 将 512 frames 重采样成 480 frames 以解决噪音问题。感谢 @Junhoo
+    WDL_ResampleSample *in_buf;
+    int nframes = resampler_audio.ResamplePrepare(512, 2, &in_buf);
+    for (int i = 0; i < nframes * 2; i++) {
+        in_buf[i] = audio_element.data[i];
+    }
+    static WDL_ResampleSample out_buf[480 * 2];
+    resampler_audio.ResampleOut(out_buf, nframes, 480, 2);
+
+    static uint8_t out[200];
+    (void) opus_encode_float(encoder, out_buf, 480, out, 200);
+    critical_section_enter_blocking(&opus_cs);
+    memcpy(opus_buf, out, 200);
+    critical_section_exit(&opus_cs);
+}
+
+// Mic path: opus packets from the controller (core0 mic_fifo) -> opus decode ->
+// PCM into mic_decode_fifo for audio_loop to push to the USB IN endpoint.
+static void __not_in_flash_func(mic_proc)() {
+    static mic_element mic_packet{};
+    if (!queue_try_remove(&mic_fifo, &mic_packet)) {
+        return;
+    }
+    static int16_t decoded_data[MIC_FRAMES * MIC_CHANNELS];
+    auto decoded_samples = opus_decode(decoder, mic_packet.data, MIC_OPUS_SIZE, decoded_data, MIC_FRAMES, false);
+    if (decoded_samples <= 0) {
+        // Gated behind ENABLE_VERBOSE: printf pulls the newlib formatting chain
+        // (flash) onto core1's path. Release builds compile it out so core1's
+        // audio loop stays fully RAM-resident (no XIP fetches on this core).
+#if ENABLE_VERBOSE
+        printf("[Audio] OpusDecoder decode failed: %d\n", decoded_samples);
+#endif
+        return;
+    }
+    static mic_decode_element decode_element{};
+    decode_element.len = decoded_samples * MIC_CHANNELS * sizeof(int16_t);
+    memcpy(decode_element.data, decoded_data, decode_element.len);
+    if (queue_is_full(&mic_decode_fifo)) {
+        queue_try_remove(&mic_decode_fifo, NULL);
+    }
+    queue_try_add(&mic_decode_fifo, &decode_element);
+}
+
+void __not_in_flash_func(core1_entry)() {
+    // Register core1 as a flash-safe victim so core0's flash_safe_execute()
+    // (config_save) actually parks this core while flash is erased/programmed,
+    // instead of letting it fault on XIP. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
+    flash_safe_execute_core_init();
     int error = 0;
     encoder = opus_encoder_create(48000, 2,OPUS_APPLICATION_AUDIO, &error);
     if (error != 0) {
@@ -178,23 +297,26 @@ void core1_entry() {
     resampler_audio.SetRates(51200, 48000);
     resampler_audio.SetFeedMode(true);
     resampler_audio.Prealloc(2, 512, 480);
+    decoder = opus_decoder_create(48000, MIC_CHANNELS, &error);
+    if (error != 0) {
+        printf("[Audio] OpusDecoder create failed\n");
+    }
 
     while (true) {
-        static audio_raw_element audio_element{};
-        queue_remove_blocking(&audio_fifo, &audio_element);
-        // 将 512 frames 重采样成 480 frames 以解决噪音问题。感谢 @Junhoo
-        WDL_ResampleSample *in_buf;
-        int nframes = resampler_audio.ResamplePrepare(512, 2, &in_buf);
-        for (int i = 0; i < nframes * 2; i++) {
-            in_buf[i] = audio_element.data[i];
-        }
-        static WDL_ResampleSample out_buf[480 * 2];
-        resampler_audio.ResampleOut(out_buf, nframes, 480, 2);
-
-        static uint8_t out[200];
-        (void) opus_encode_float(encoder, out_buf, 480, out, 200);
-        critical_section_enter_blocking(&opus_cs);
-        memcpy(opus_buf, out, 200);
-        critical_section_exit(&opus_cs);
+        speaker_proc();
+        mic_proc();
     }
+}
+
+// data points at the opus mic payload, len is the bytes available there.
+// In RAM (consistent with the BT-receive path) and validates len so a short
+// or malformed report can't over-read past the packet buffer.
+void __not_in_flash_func(mic_add_queue)(uint8_t *data, uint16_t len) {
+    if (len < MIC_OPUS_SIZE) return;
+    static mic_element mic_packet{};
+    memcpy(mic_packet.data, data, MIC_OPUS_SIZE);
+    if (queue_is_full(&mic_fifo)) {
+        queue_try_remove(&mic_fifo, NULL);
+    }
+    queue_try_add(&mic_fifo, &mic_packet);
 }

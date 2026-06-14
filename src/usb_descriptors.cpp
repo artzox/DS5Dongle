@@ -220,8 +220,8 @@ uint8_t descriptor_configuration[] = {
     0x04, // bTerminalID: 4
     0x02, 0x04, // wTerminalType: Headset (0x0402)
     0x03, // bAssocTerminal: 3 (paired with speaker)
-    0x02, // bNrChannels: 2
-    0x03, 0x00, // wChannelConfig: L/R Front (0x0003)
+    0x02, // bNrChannels: 2 (mono mic duplicated; matches the real DS5's 2-ch mic)
+    0x03, 0x00, // wChannelConfig: Front Left + Front Right
     0x00, // iChannelNames: 0
     0x00, // iTerminal: 0
 
@@ -335,7 +335,7 @@ uint8_t descriptor_configuration[] = {
     0x01, // bDelay: 1 frame
     0x01, 0x00, // wFormatTag: PCM (0x0001)
 
-    // Format Type Descriptor (2-channel, 16-bit, 48kHz)
+    // Format Type Descriptor (1-channel, 16-bit, 48kHz)
     0x0B, // bLength: 11
     0x24, // bDescriptorType: CS_INTERFACE
     0x02, // bDescriptorSubtype: FORMAT_TYPE
@@ -351,7 +351,7 @@ uint8_t descriptor_configuration[] = {
     0x05, // bDescriptorType (ENDPOINT)
     0x82, // bEndpointAddress: IN EP2
     0x05, // bmAttributes: Isochronous, Asynchronous
-    0xC4, 0x00, // wMaxPacketSize: 196 bytes
+    0xC4, 0x00, // wMaxPacketSize: 196 bytes ((48+1) samples * 2 ch * 2 bytes)
     0x01, // bInterval: 1
     0x00, // bRefresh
     0x00, // bSynchAddress
@@ -938,7 +938,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
         case STRID_SERIAL:
             chr_count = board_usb_get_serial(_desc_str + 1, 32) + 1;
-            _desc_str[chr_count] = '1'; // refresh windows cache
+            _desc_str[chr_count] = '2'; // refresh windows cache (bumped for 2-ch mic)
             break;
 
         default:

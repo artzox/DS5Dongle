@@ -23,6 +23,8 @@ struct __attribute__((packed)) Config_body {
     uint8_t lock_volume; // 0: disable,1: enable
     uint8_t disable_usb_sn; // 0: disable,1: enable
     uint8_t ps_shortcut_enabled; // 0: disabled, 1: enabled (ENABLE_WAKE_HID only)
+    uint8_t disable_mic; // bool: 0 enable (default), 1 disable controller mic
+    uint8_t disable_speaker; // bool: 0 enable (default), 1 disable speaker/headset
 };
 
 struct __attribute__((packed)) Config {

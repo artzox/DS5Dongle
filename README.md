@@ -15,7 +15,10 @@ This project enables the Raspberry Pi Pico2W (or other compatible board, e.g. th
 
 - 🎮 Full DualSense connectivity via Pico2W (or other compatible board)
 - 🔊 Supports HD haptics (advanced vibration feedback)
+- 🎧 Headset audio output — controller speaker and 3.5 mm jack
+- 🎤 Headset microphone input — the controller mic is exposed as a USB audio input device
 - 📡 Wireless Bluetooth bridging
+- ⚡ Runs at the stock 150 MHz clock — no overclock required
 
 ## Getting Started
 
@@ -78,6 +81,13 @@ The Pico device will only be visible to the system after the controller is conne
 
 Some behaviors depend on reconnection cycles to take effect
 
+### Microphone
+
+The controller microphone is exposed as a USB audio input — "Headset Microphone"
+on Windows. After selecting it as your recording device, raise its input/capture
+level in your OS: Windows in particular often defaults it to 0 (or very low),
+which makes the mic seem dead even though it is working.
+
 ### Low-battery LED indicator
 
 When the connected DualSense reports its battery at or below 10% (and it is not charging), the Pico onboard LED switches
@@ -116,20 +126,22 @@ It is recommended to read #60 and #61 before using this feature.
 ## Known Issues
 
 - ⚠️ Audio may experience slight stuttering
-- ⚠️ Overclocking is required for proper performance
 
-## Performance / Overclocking
+## Performance
 
-Due to encoding requirements, the RP2350 must be overclocked:
+The audio path — libopus encode/decode, the resampler, and the Bluetooth/USB
+packet handling on the hot path — executes from **RAM** instead of flash. This
+removes flash-fetch (XIP cache miss) stalls from the time-critical audio loop,
+which previously forced the RP2350 to be overclocked just to keep up with audio
+encoding.
 
-Current settings:
+As a result, the firmware runs the **full audio path (haptics, speaker, 3.5 mm
+output, and microphone) at the stock 150 MHz clock — no overclock and no
+core-voltage bump.**
 
-- Voltage: 1.2V
-- Frequency: 320 MHz
-
-If your device fails to boot:
-
-- Increase voltage slightly or Reduce CPU frequency
+> Earlier releases required 320 MHz @ 1.2 V; overclocking is no longer needed.
+> If you build for a different board and it fails to boot, reduce the CPU
+> frequency (and/or raise the voltage) in `CMakeLists.txt`.
 
 ## Build Instructions
 
