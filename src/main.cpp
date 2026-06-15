@@ -5,6 +5,7 @@
 #include <cstdio>
 #include "bsp/board_api.h"
 #include "bt.h"
+#include "button_functions.h"
 #include "utils.h"
 #include "resample.h"
 #include "audio.h"
@@ -324,6 +325,7 @@ int main() {
 #if ENABLE_BATT_LED
         battery_led_tick();
 #endif
+        button_check();
         bt_inquiring_led();
         dse_task();
     }

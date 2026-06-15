@@ -279,9 +279,11 @@ static void __not_in_flash_func(mic_proc)() {
 }
 
 void __not_in_flash_func(core1_entry)() {
-    // Register core1 as a flash-safe victim so core0's flash_safe_execute()
-    // (config_save) actually parks this core while flash is erased/programmed,
-    // instead of letting it fault on XIP. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
+    // Register core1 as a flash-safe victim so core0's flash_safe_execute() really
+    // parks this core while flash is accessed, instead of letting it fault on XIP.
+    // Used by config_save() (flash erase/program) and the BOOTSEL poll (which briefly
+    // floats QSPI CSn) - the latter makes polling BOOTSEL safe while audio streams on
+    // core1. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
     flash_safe_execute_core_init();
     int error = 0;
     encoder = opus_encoder_create(48000, 2,OPUS_APPLICATION_AUDIO, &error);

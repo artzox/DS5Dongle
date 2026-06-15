@@ -109,6 +109,7 @@ add_executable(ds5-bridge
         src/usb.cpp
         src/audio.cpp
         src/bt.cpp
+        src/button_functions.cpp
         src/dse.cpp
         src/config.cpp
         src/cmd.cpp
@@ -275,6 +276,9 @@ target_compile_definitions(ds5-bridge PRIVATE PICO_EMBED_XIP_SETUP=1)
 target_compile_definitions(ds5-bridge PRIVATE
         CYW43_LWIP=0
         ENABLE_SERIAL=${ENABLE_SERIAL_VALUE}
+        # 0 (not 1): flash_safe_execute() must really park core1 while flash is
+        # accessed - both config_save() and the BOOTSEL CSn float poll. core1_entry
+        # registers via flash_safe_execute_core_init().
         PICO_FLASH_ASSUME_CORE1_SAFE=0
         WDL_RESAMPLE_TYPE=float
         CYW43_PIO_CLOCK_DIV_INT=${CYW43_PIO_CLOCK_DIV_VALUE}

@@ -18,6 +18,7 @@ This project enables the Raspberry Pi Pico2W (or other compatible board, e.g. th
 - 🎧 Headset audio output — controller speaker and 3.5 mm jack
 - 🎤 Headset microphone input — the controller mic is exposed as a USB audio input device
 - 📡 Wireless Bluetooth bridging
+- 🔘 BOOTSEL-button controller management — pair, reboot, enter BOOTSEL for flashing, or forget all pairings without unplugging
 - ⚡ Runs at the stock 150 MHz clock — no overclock required
 
 ## Getting Started
@@ -45,6 +46,34 @@ You have two options:
 3. Once connected, the device will appear on the host system
 
 ***You may need to replug the Pico when the controller is in pairing mode.***
+
+### BOOTSEL button: switch, reboot, or clear controllers
+
+While the firmware is running, the Pico's **BOOTSEL button** doubles as a
+controller and reset control — no unplugging or re-flashing needed:
+
+- **Short press (click):**
+  - If a controller is connected, the current one is disconnected (its pairing is
+    kept, so it can reconnect later). Use this to free the dongle for a different
+    already-paired controller.
+  - If nothing is connected, a 30-second scan starts to pair a new controller.
+    Put the DualSense into pairing mode (hold **PS + Create/Share** until the
+    light bar flashes) while the scan runs.
+- **Double click:** **Reboot the Pico** — a normal firmware restart: re-enters
+  pairing inquiry, drops the current connection, and recovers from a transient
+  glitch. (Clicks register after a brief pause, to allow for a second/third click.)
+- **Triple click:** **Reboot into BOOTSEL** — the dongle re-enumerates as a USB
+  mass-storage drive so you can drag on a new `.uf2`, without holding BOOTSEL while
+  plugging in.
+- **Long press (~1.5 s):** Disconnect and **forget every paired controller** — all
+  stored pairings are deleted and blacklisted so they won't silently auto-reconnect,
+  even across a power cycle. The onboard LED flashes six times to confirm. To use a
+  forgotten controller again, put it back into **PS + Create/Share** pairing mode.
+
+> Triple click is a software path into the bootloader; you can also still enter it
+> the hardware way by holding BOOTSEL **while plugging in** the Pico (see
+> [Flashing Firmware](#flashing-firmware) above). All of these act on
+> click / double / triple / long-press **while the firmware is already running**.
 
 ## Configuration
 
