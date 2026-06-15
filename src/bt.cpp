@@ -405,7 +405,7 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
             bt_data_callback(INTERRUPT, packet, size);
 
             // 静默检测
-            if (get_config().disable_inactive_disconnect) {
+            if (!(packet[2] & 1) || get_config().disable_inactive_disconnect) {
                 return;
             }
             if (packet[3] < 120 || packet[3] > 140 ||
