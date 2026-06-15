@@ -48,11 +48,6 @@ on:
         required: false
         type: boolean
         default: false
-      usbwake:
-        description: Enable USB Wake feature (-DENABLE_WAKE_HID=ON)
-        required: false
-        type: boolean
-        default: false
 
 env:
   PICO_SDK_REF: 2.2.0
@@ -187,18 +182,6 @@ jobs:
           cmake --build build/debug --target ds5-bridge
           cp build/debug/ds5-bridge.uf2 "artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2"
 
-      - name: Build No Speaker firmware (no overclock)
-        run: |
-          VERSION_ARG=()
-          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-          cmake -S . -B build/nospeaker -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-            -DDISABLE_SPEAKER_PROC=ON \
-            "${VERSION_ARG[@]}"
-          cmake --build build/nospeaker --target ds5-bridge
-          cp build/nospeaker/ds5-bridge.uf2 "artifacts/ds5-bridge-no-oc-and-spk${{ inputs.asset_suffix }}.uf2"
-
       - name: Build Pico W firmware
         if: inputs.picow
         run: |
@@ -224,19 +207,6 @@ jobs:
             "${VERSION_ARG[@]}"
           cmake --build build/waveshare --target ds5-bridge
           cp build/waveshare/ds5-bridge.uf2 "artifacts/ds5-bridge-waveshare${{ inputs.asset_suffix }}.uf2"
-
-      - name: Build USB-Wake firmware
-        if: inputs.picow
-        run: |
-          VERSION_ARG=()
-          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-          cmake -S . -B build/usbwake -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-            -DENABLE_WAKE_HID=ON \
-            "${VERSION_ARG[@]}"
-          cmake --build build/usbwake --target ds5-bridge
-          cp build/usbwake/ds5-bridge.uf2 "artifacts/ds5-bridge-usbwake${{ inputs.asset_suffix }}.uf2"
 
 #      - name: Build no-batt-led firmware (compile check only)
 #        if: inputs.no_batt_led_check
@@ -270,13 +240,6 @@ jobs:
           archive: false
           if-no-files-found: error
 
-      - name: Upload No Speaker firmware (no overclock)
-        uses: actions/upload-artifact@v7
-        with:
-          path: artifacts/ds5-bridge-no-oc-and-spk${{ inputs.asset_suffix }}.uf2
-          archive: false
-          if-no-files-found: error
-
       - name: Upload PicoW UF2 artifact
         if: inputs.picow
         uses: actions/upload-artifact@v7
@@ -290,14 +253,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: artifacts/ds5-bridge-waveshare${{ inputs.asset_suffix }}.uf2
-          archive: false
-          if-no-files-found: error
-
-      - name: Upload USBWake UF2 artifact
-        if: inputs.usbwake
-        uses: actions/upload-artifact@v7
-        with:
-          path: artifacts/ds5-bridge-usbwake${{ inputs.asset_suffix }}.uf2
           archive: false
           if-no-files-found: error
 
