@@ -224,13 +224,13 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             feature_data[0x81].assign(buf, buf + sizeof(buf));
             break;
         }
-        case 0x07: {
+        /*case 0x07: {
             // Reboot into BOOTSEL (USB mass-storage bootloader) so the dongle can be
             // reflashed from the host without the physical BOOTSEL button. The
             // controller's enumeration is unchanged -- this is just a host command.
             printf("[CMD] Reboot to BOOTSEL (USB bootloader)\n");
             reset_usb_boot(0, 0); // noreturn
             break;
-        }
+        }*/
     }
 }
