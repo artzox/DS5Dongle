@@ -113,6 +113,20 @@ void config_valid() {
         body->disable_speaker = 0;
         printf("[Config] disable_speaker is invalid\n");
     }
+    if (body->auto_haptics_enable > 2) body->auto_haptics_enable = 0;
+    if (body->auto_haptics_gain == 0 || body->auto_haptics_gain > 200) body->auto_haptics_gain = 100;
+    if (body->auto_haptics_lowpass_hz < 20 || body->auto_haptics_lowpass_hz > 400) body->auto_haptics_lowpass_hz = 60;
+    if (body->auto_mute_replace > 1) body->auto_mute_replace = 1;
+    if (body->auto_mute_mix > 1) body->auto_mute_mix = 0;
+    if (body->auto_haptics_gate > 100) body->auto_haptics_gate = 20;
+    if (body->auto_haptics_slope != 6 && body->auto_haptics_slope != 12 && body->auto_haptics_slope != 24) body->auto_haptics_slope = 12;
+    if (body->lightbar_off > 1) body->lightbar_off = 0;
+    if (body->auto_haptics_smooth > 100) body->auto_haptics_smooth = 40;
+    if (body->bt_flush_timeout > 0x07FF) body->bt_flush_timeout = 0; // 0=off, max per BT spec
+    if (body->bt_qos_latency_us > 50000) body->bt_qos_latency_us = 0; // 0=off
+    if (body->rumble_haptic_strength > 100) body->rumble_haptic_strength = 50;
+    if (body->effect_leak_volume > 100) body->effect_leak_volume = 0; // 0=off
+    if (body->effect_leak_hp_hz < 100 || body->effect_leak_hp_hz > 5000) body->effect_leak_hp_hz = 800;
     if (body->enable_wake > 1) {
         body->enable_wake = 0;
         printf("[Config] enable_wake is invalid\n");

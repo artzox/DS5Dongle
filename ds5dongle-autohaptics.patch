@@ -1,0 +1,469 @@
+
+--- a/src/audio.cpp
++++ b/src/audio.cpp
+@@ -1,6 +1,11 @@
+ //
+ // Created by awalol on 2026/3/5.
+ //
++// Audio auto-haptics modifications (c) 2026 Serge — MIT License.
++// The audio-derived auto-haptics here were inspired by loteran's earlier
++// auto-haptics work on the DS5Dongle; the DSP was rewritten, but loteran's
++// state_set-in-RAM insight made stock-clock actuation possible. With thanks.
++//
+ 
+ /*
+  * This Source Code Form is subject to the terms of the Mozilla Public
+@@ -48,6 +53,13 @@
+ queue_t audio_fifo;
+ queue_t mic_fifo;
+ queue_t mic_decode_fifo;
++// Diagnostic: live channel detection, read via config field 0x20.
++volatile uint16_t g_diag_bytes_read = 0;
++volatile uint8_t  g_diag_actual_ch  = 0;
++// Incoming DS4Windows rumble-emulation motor values (0-255), blended into the
++// actuator signal in Mix mode when auto-haptics is on.
++volatile uint8_t g_rumble_l = 0;
++volatile uint8_t g_rumble_r = 0;
+ static uint8_t opus_buf[200];
+ critical_section_t opus_cs;
+ 
+@@ -126,7 +138,17 @@
+ 
+     int16_t raw[192];
+     uint32_t bytes_read = tud_audio_read(raw, sizeof(raw)); // 每次读入 384 bytes
+-    int frames = bytes_read / (INPUT_CHANNELS * sizeof(int16_t));
++    // Detect channel count from packet size (loteran's approach): 4ch@48kHz ≈ 384
++    // bytes/ms (Linux/PipeWire native haptic stream), 2ch@48kHz ≈ 192 bytes/ms
++    // (Windows / DS4Windows / Stereo Mix — no dedicated haptic channels).
++    const int actual_ch = (bytes_read > 250) ? 4 : 2;
++    // Diagnostic: expose the live detection so the portal can show what's
++    // actually happening (esp. under DS4Windows).
++    extern volatile uint16_t g_diag_bytes_read;
++    extern volatile uint8_t  g_diag_actual_ch;
++    g_diag_bytes_read = (uint16_t)bytes_read;
++    g_diag_actual_ch  = (uint8_t)actual_ch;
++    int frames = bytes_read / (actual_ch * (int)sizeof(int16_t));
+     if (frames == 0) {
+         return;
+     }
+@@ -139,10 +161,84 @@
+ 
+     // const float audio_gain = mute[0] ? 0.0f : powf(10.0f, get_config().speaker_volume / 20.0f);
+     const float haptics_gain = get_config().haptics_gain;
++    const uint8_t auto_mode = get_config().auto_haptics_enable;
++    // Speaker-data mute: silence the speaker AUDIO CONTENT (not the volume) when
++    // Windows mutes, or via auto-mute. Zeroing the speaker buffer leaves
++    // VolumeSpeaker untouched, so the controller still scales HAPTICS normally
++    // (it scales haptic output by speaker volume — lowering volume kills haptics).
++    extern uint8_t mute[2];
++    const bool mute_for_mode =
++        (auto_mode == 2 && get_config().auto_mute_replace) ||
++        (auto_mode == 1 && get_config().auto_mute_mix);
++    const float spk_gain = (mute[0] || mute_for_mode) ? 0.0f : 1.0f;
++    // Intensity maps 0-100 to a perceptual gain. The carrier makeup is folded in
++    // here (modest, ~2.5x) instead of a fixed 12x that saturated the soft-clip and
++    // crushed the whole usable range into the bottom few percent. Now the slider
++    // spans weak->strong roughly linearly.
++    // Intensity curve: the 90 Hz carrier sits in the actuator's most responsive
++    // band, so the response to linear gain is very non-linear — low values already
++    // actuate. Use a curve (power 1.5) so the slider has fine control low down AND
++    // strong headroom up top. intensity 0..200 -> 0..1, curved, scaled to a usable
++    // peak. ~100 = firm, 200 = very strong, low values = subtle.
++    const float intensity_n = (get_config().auto_haptics_gain / 200.0f); // 0..1 (100->0.5)
++    const float intensity_curved = intensity_n * sqrtf(intensity_n); // ^1.5: gentle low, strong high
++    const float auto_gain = (auto_mode > 0)
++        ? intensity_curved * 9.0f * haptics_gain : 0.0f;
++    // Clamp cutoff defensively so a 0/garbage config value can't zero the filter
++    // coefficient (which would silence auto-haptics entirely).
++    uint16_t lp_fc = get_config().auto_haptics_lowpass_hz;
++    if (lp_fc < 20 || lp_fc > 400) lp_fc = 60;
++    static float lp_a = 0.0f; static uint16_t lp_fc_cached = 0;
++    if (lp_fc != lp_fc_cached) {
++        lp_fc_cached = lp_fc;
++        lp_a = 1.0f - expf(-2.0f * (float)M_PI * (float)lp_fc / 48000.0f);
++    }
++    static float lp_l = 0.0f, lp_r = 0.0f;
++    static float lp2_l = 0.0f, lp2_r = 0.0f; // cascade stages for steeper slopes
++    static float lp3_l = 0.0f, lp3_r = 0.0f;
++    static float lp4_l = 0.0f, lp4_r = 0.0f;
++    static float lp_h_l = 0.0f, lp_h_r = 0.0f; // LP memory for native haptic ch2/3 (Mix mode)
++    static float env_l = 0.0f, env_r = 0.0f;
++    constexpr float ENV_ATK = 0.15f;
++    // Smoothing: maps 0-100 to envelope release rate. Lower release coefficient =
++    // longer decay = smoother/more continuous. smooth=0 -> snappy (0.03),
++    // smooth=100 -> very smooth (0.002). Lets you dial the feel manually.
++    const uint8_t smooth_cfg = get_config().auto_haptics_smooth > 100 ? 50 : get_config().auto_haptics_smooth;
++    const float ENV_REL = 0.030f - (smooth_cfg / 100.0f) * 0.028f;
++    // Filter slope: number of cascaded 1-pole stages. 1 = 6 dB/oct, 2 = 12 dB/oct,
++    // 4 = 24 dB/oct. Steeper = sharper voice/bass separation. Config stores the
++    // dB/oct value (6/12/24); map to pole count.
++    const uint8_t slope_db = get_config().auto_haptics_slope;
++    const int n_poles = (slope_db >= 24) ? 4 : (slope_db >= 12) ? 2 : 1;
++    // Effect leak: when auto-mute would fully silence the speaker, optionally let
++    // a high-passed, low-volume version through. High-pass keeps sharp transient
++    // effects (shots, clinks, mechanical impacts) and rejects the low-mid drone of
++    // dialog/music, so you get a subtle "detail layer" like native DualSense games
++    // — without the full soundtrack. leak_vol 0 = fully muted (off).
++    const float leak_vol = get_config().effect_leak_volume / 100.0f;
++    const bool leak_active = (mute_for_mode && !mute[0] && leak_vol > 0.0f);
++    // High-pass cutoff for the leak (separate from haptic LP). Higher = only the
++    // sharpest transients pass. ~800 Hz keeps effects, drops voice fundamentals.
++    static float hp_l = 0.0f, hp_r = 0.0f; // high-pass state (1-pole, via LP subtraction)
++    const float hp_fc = (float)get_config().effect_leak_hp_hz;
++    const float hp_a = 1.0f - expf(-2.0f * (float)M_PI * hp_fc / 48000.0f);
+     for (int i = 0; i < nframes; i++) {
+  #if !DISABLE_SPEAKER_PROC       
+-        audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS] / 32768.0f;
+-        audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS + 1] / 32768.0f;
++        float spk_l_out, spk_r_out;
++        if (leak_active) {
++            // High-pass = signal - low-pass. Keeps transients/highs, drops lows.
++            const float in_l = raw[i * actual_ch]     / 32768.0f;
++            const float in_r = raw[i * actual_ch + 1] / 32768.0f;
++            hp_l += hp_a * (in_l - hp_l);
++            hp_r += hp_a * (in_r - hp_r);
++            spk_l_out = (in_l - hp_l) * leak_vol;
++            spk_r_out = (in_r - hp_r) * leak_vol;
++        } else {
++            spk_l_out = raw[i * actual_ch]     / 32768.0f * spk_gain;
++            spk_r_out = raw[i * actual_ch + 1] / 32768.0f * spk_gain;
++        }
++        audio_buf[audio_buf_pos++] = spk_l_out;
++        audio_buf[audio_buf_pos++] = spk_r_out;
+         if (audio_buf_pos == 512 * 2) {
+             static audio_raw_element element{};
+             memcpy(element.data, audio_buf, 512 * 2 * 4);
+@@ -155,10 +251,101 @@
+             audio_buf_pos = 0;
+         }
+ #endif
+-        in_buf[i * 2] = static_cast<WDL_ResampleSample>(clamp(raw[i * INPUT_CHANNELS + 2] / 32768.0f * haptics_gain,
+-                                                              -1.0f, 1.0f));
+-        in_buf[i * 2 + 1] = static_cast<WDL_ResampleSample>(clamp(raw[i * INPUT_CHANNELS + 3] / 32768.0f * haptics_gain,
+-                                                                  -1.0f, 1.0f));
++        // Native haptic channels (ch2/3) only exist in 4ch mode. In 2ch mode
++        // (Windows/DS4Windows) there are no dedicated haptic channels.
++        float h_l = (actual_ch == 4) ? raw[i * 4 + 2] / 32768.0f * haptics_gain : 0.0f;
++        float h_r = (actual_ch == 4) ? raw[i * 4 + 3] / 32768.0f * haptics_gain : 0.0f;
++
++        // Auto-haptics runs when the user enables it (mix/replace). Unlike
++        // loteran, 2ch input does NOT force it on — so with auto-haptics OFF you
++        // still get pure native rumble->DualSense conversion (awalol behavior),
++        // even under DS4Windows. Mode is authoritative.
++        if (auto_mode > 0) {
++            const float spk_l = raw[i * actual_ch    ] / 32768.0f;
++            const float spk_r = raw[i * actual_ch + 1] / 32768.0f;
++            lp_l += lp_a * (spk_l - lp_l);
++            lp_r += lp_a * (spk_r - lp_r);
++            // Cascade additional poles for steeper slopes. Each stage adds
++            // 6 dB/oct. A single pole leaks male voice fundamentals (85-180 Hz)
++            // when the cutoff is near there; more poles reject voice harder.
++            float fl = lp_l, fr = lp_r;
++            if (n_poles >= 2) {
++                lp2_l += lp_a * (lp_l - lp2_l);
++                lp2_r += lp_a * (lp_r - lp2_r);
++                fl = lp2_l; fr = lp2_r;
++                if (n_poles >= 4) {
++                    lp3_l += lp_a * (lp2_l - lp3_l);
++                    lp3_r += lp_a * (lp2_r - lp3_r);
++                    lp4_l += lp_a * (lp3_l - lp4_l);
++                    lp4_r += lp_a * (lp3_r - lp4_r);
++                    fl = lp4_l; fr = lp4_r;
++                }
++            }
++            const float abs_l = fl < 0.0f ? -fl : fl;
++            const float abs_r = fr < 0.0f ? -fr : fr;
++            env_l = (abs_l > env_l) ? env_l + ENV_ATK*(abs_l-env_l) : env_l + ENV_REL*(abs_l-env_l);
++            env_r = (abs_r > env_r) ? env_r + ENV_ATK*(abs_r-env_r) : env_r + ENV_REL*(abs_r-env_r);
++            // Noise gate with SMOOTHED gain: a hard gate flickers on/off when the
++            // bass envelope hovers near the threshold, chopping the output (jagged
++            // feel). Compute a target gate gain, then slew toward it so the gate
++            // opens/closes smoothly instead of switching.
++            const uint8_t gate_cfg = get_config().auto_haptics_gate;
++            const float GATE_THRESH = (gate_cfg > 100 ? 0 : gate_cfg) * 0.001f; // 0-100 -> 0..0.1
++            const float GATE_KNEE   = 0.04f; // wider knee = gentler transition
++            static float gsm_l = 0.0f, gsm_r = 0.0f; // smoothed gate gain memory
++            // Gate slew: ~5 ms open, ~60 ms close, at 48 kHz frame rate.
++            constexpr float GATE_OPEN = 0.20f, GATE_CLOSE = 0.02f;
++            float genv_l = env_l, genv_r = env_r;
++            if (GATE_THRESH > 0.0f) {
++                float tgt_l = (env_l - GATE_THRESH) / GATE_KNEE;
++                float tgt_r = (env_r - GATE_THRESH) / GATE_KNEE;
++                tgt_l = tgt_l < 0.0f ? 0.0f : (tgt_l > 1.0f ? 1.0f : tgt_l);
++                tgt_r = tgt_r < 0.0f ? 0.0f : (tgt_r > 1.0f ? 1.0f : tgt_r);
++                gsm_l += ((tgt_l > gsm_l) ? GATE_OPEN : GATE_CLOSE) * (tgt_l - gsm_l);
++                gsm_r += ((tgt_r > gsm_r) ? GATE_OPEN : GATE_CLOSE) * (tgt_r - gsm_r);
++                genv_l = env_l * gsm_l;
++                genv_r = env_r * gsm_r;
++            }
++            // Bass envelope amplitude-modulates a 90 Hz carrier so the voice-coil
++            // actuator can render it (a near-DC low-passed signal produces no
++            // motion; the carrier puts energy in the actuator's responsive band).
++            static float carrier_ph = 0.0f;
++            carrier_ph += 2.0f * (float)M_PI * 90.0f / 48000.0f;
++            if (carrier_ph > 2.0f*(float)M_PI) carrier_ph -= 2.0f*(float)M_PI;
++            const float carrier = sinf(carrier_ph);
++            float al = genv_l * carrier * auto_gain;
++            float ar = genv_r * carrier * auto_gain;
++            // Gentler limiting: the old al/(1+|al|) soft-clip crushed everything
++            // above ~0.5 and capped the felt strength. tanh stays closer to linear
++            // through the mid range and only compresses near the ±1.0 ceiling, so
++            // high intensity actually reaches strong output instead of saturating.
++            al = tanhf(al);
++            ar = tanhf(ar);
++            if (auto_mode == 2) {
++                // Replace: derived only
++                h_l = al; h_r = ar;
++            } else {
++                // Mix: native haptics (ch2/3) + derived. LP-filter the native
++                // channels first — in VoiceMeeter/Windows 4ch setups ch2/3 often
++                // mirror the full-band stereo (ch0/1), so passing them raw leaks
++                // dialog/high-freq audio straight to the actuators. Filtering to
++                // the same bass band keeps only the felt low-frequency content.
++                lp_h_l += lp_a * (h_l - lp_h_l);
++                lp_h_r += lp_a * (h_r - lp_h_r);
++                // Converted rumble: DS4Windows sends motor intensities (0-255) for
++                // Xbox360/DS4 emulation. Turn them into an actuator vibration using
++                // the same 90 Hz carrier and blend in, scaled by a configurable
++                // strength so native rumble doesn't overpower the audio haptics.
++                const float rumble_str = get_config().rumble_haptic_strength / 100.0f;
++                const float rl = (g_rumble_l / 255.0f) * carrier * rumble_str;
++                const float rr = (g_rumble_r / 255.0f) * carrier * rumble_str;
++                float m_l = lp_h_l + al + rl, m_r = lp_h_r + ar + rr;
++                h_l = m_l / (1.0f + (m_l < 0.0f ? -m_l : m_l));
++                h_r = m_r / (1.0f + (m_r < 0.0f ? -m_r : m_r));
++            }
++        }
++        in_buf[i * 2]     = static_cast<WDL_ResampleSample>(clamp(h_l, -1.0f, 1.0f));
++        in_buf[i * 2 + 1] = static_cast<WDL_ResampleSample>(clamp(h_r, -1.0f, 1.0f));
+     }
+ 
+     // 3. 48kHz -> 3kHz 重采样
+--- a/src/bt.cpp
++++ b/src/bt.cpp
+@@ -704,6 +704,35 @@
+                 } else if (psm == PSM_HID_INTERRUPT) {
+                     printf("[L2CAP] HID Interrupt opened cid=0x%04X\n", local_cid);
+                     hid_interrupt_cid = local_cid;
++
++                    // Latency: set an automatic flush timeout on the ACL link so
++                    // haptic/output packets that can't get on-air within a few BT
++                    // slots are DROPPED rather than retransmitted late. A stale
++                    // haptic packet arriving late feels worse (laggy/jittery) than
++                    // a momentary gap, so for a real-time haptic stream this trades
++                    // rare tiny dropouts for lower worst-case latency and less
++                    // jitter — closer to USB's fixed cadence. Units are 0.625 ms;
++                    // configurable via bt_flush_timeout (0 = default/infinite).
++                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
++                        const uint16_t ft = get_config().bt_flush_timeout;
++                        if (ft > 0) {
++                            hci_send_cmd(&hci_write_automatic_flush_timeout, acl_handle, ft);
++                            printf("[L2CAP] Set automatic flush timeout: %u (%.2f ms)\n", ft, ft * 0.625f);
++                        }
++                        // QoS setup: request the baseband schedule this link with a
++                        // tight, consistent service interval (lower latency / less
++                        // poll jitter) — the lever that targets BT slot scheduling
++                        // directly. Guaranteed service, token rate sized for the
++                        // haptic stream, latency from config (us). 0 = don't request.
++                        const uint16_t qos_lat_us = get_config().bt_qos_latency_us;
++                        if (qos_lat_us > 0) {
++                            // flags=0, service_type=2 (Guaranteed), token_rate=8000 B/s,
++                            // peak_bw=8000 B/s, latency=qos_lat_us, delay_var=qos_lat_us
++                            hci_send_cmd(&hci_qos_setup, acl_handle, 0, 2,
++                                         8000, 8000, (uint32_t)qos_lat_us, (uint32_t)qos_lat_us);
++                            printf("[L2CAP] QoS setup requested: latency=%u us\n", qos_lat_us);
++                        }
++                    }
+                     // Successful pair removes this specific MAC from the persistent
+                     // blacklist (treated as user-explicit re-pair in PS+Share mode).
+                     bt_blacklist_remove(current_device_addr);
+--- a/src/cmd.cpp
++++ b/src/cmd.cpp
+@@ -146,6 +146,20 @@
+             new_config.enable_wake = value;
+             break;
+         }
++        case 0x12: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_haptics_enable=v; break; }
++        case 0x13: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_haptics_gain=v; break; }
++        case 0x14: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_haptics_lowpass_hz=v; break; }
++        case 0x15: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_mute_replace=v; break; }
++        case 0x16: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_mute_mix=v; break; }
++        case 0x17: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_haptics_gate=v; break; }
++        case 0x18: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_haptics_slope=v; break; }
++        case 0x19: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.lightbar_off=v; break; }
++        case 0x1a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.auto_haptics_smooth=v; break; }
++        case 0x1b: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.bt_flush_timeout=v; break; }
++        case 0x1c: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.bt_qos_latency_us=v; break; }
++        case 0x1d: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.rumble_haptic_strength=v; break; }
++        case 0x1e: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_volume=v; break; }
++        case 0x1f: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_hp_hz=v; break; }
+         default:
+             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
+             return false;
+@@ -195,6 +209,23 @@
+             return write_config_value(buffer, bufsize, config.disable_speaker);
+         case 0x11:
+             return write_config_value(buffer, bufsize, config.enable_wake);
++        case 0x12: return write_config_value(buffer, bufsize, config.auto_haptics_enable);
++        case 0x13: return write_config_value(buffer, bufsize, config.auto_haptics_gain);
++        case 0x14: return write_config_value(buffer, bufsize, config.auto_haptics_lowpass_hz);
++        case 0x15: return write_config_value(buffer, bufsize, config.auto_mute_replace);
++        case 0x16: return write_config_value(buffer, bufsize, config.auto_mute_mix);
++        case 0x17: return write_config_value(buffer, bufsize, config.auto_haptics_gate);
++        case 0x18: return write_config_value(buffer, bufsize, config.auto_haptics_slope);
++        case 0x19: return write_config_value(buffer, bufsize, config.lightbar_off);
++        case 0x1a: return write_config_value(buffer, bufsize, config.auto_haptics_smooth);
++        case 0x1b: return write_config_value(buffer, bufsize, config.bt_flush_timeout);
++        case 0x1c: return write_config_value(buffer, bufsize, config.bt_qos_latency_us);
++        case 0x1d: return write_config_value(buffer, bufsize, config.rumble_haptic_strength);
++        case 0x1e: return write_config_value(buffer, bufsize, config.effect_leak_volume);
++        case 0x1f: return write_config_value(buffer, bufsize, config.effect_leak_hp_hz);
++        case 0x20: { extern volatile uint16_t g_diag_bytes_read; return write_config_value(buffer, bufsize, (uint16_t)g_diag_bytes_read); }
++        case 0x21: { extern volatile uint8_t g_diag_actual_ch; return write_config_value(buffer, bufsize, (uint8_t)g_diag_actual_ch); }
++        case 0x22: { int8_t rssi = 0; bt_get_signal_strength(&rssi); return write_config_value(buffer, bufsize, (uint8_t)rssi); }
+         default:
+             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
+             return false;
+@@ -289,13 +320,15 @@
+             feature_data[0x81].assign(buf, buf + sizeof(buf));
+             break;
+         }
+-        /*case 0x07: {
++        case 0x07: {
+             // Reboot into BOOTSEL (USB mass-storage bootloader) so the dongle can be
+             // reflashed from the host without the physical BOOTSEL button. The
+             // controller's enumeration is unchanged -- this is just a host command.
++            // (awalol ships this commented out for security; enabled for personal use.)
+             printf("[CMD] Reboot to BOOTSEL (USB bootloader)\n");
++            sleep_ms(50);
+             reset_usb_boot(0, 0); // noreturn
+             break;
+-        }*/
++        }
+     }
+ }
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -113,6 +113,20 @@
+         body->disable_speaker = 0;
+         printf("[Config] disable_speaker is invalid\n");
+     }
++    if (body->auto_haptics_enable > 2) body->auto_haptics_enable = 0;
++    if (body->auto_haptics_gain == 0 || body->auto_haptics_gain > 200) body->auto_haptics_gain = 100;
++    if (body->auto_haptics_lowpass_hz < 20 || body->auto_haptics_lowpass_hz > 400) body->auto_haptics_lowpass_hz = 60;
++    if (body->auto_mute_replace > 1) body->auto_mute_replace = 1;
++    if (body->auto_mute_mix > 1) body->auto_mute_mix = 0;
++    if (body->auto_haptics_gate > 100) body->auto_haptics_gate = 20;
++    if (body->auto_haptics_slope != 6 && body->auto_haptics_slope != 12 && body->auto_haptics_slope != 24) body->auto_haptics_slope = 12;
++    if (body->lightbar_off > 1) body->lightbar_off = 0;
++    if (body->auto_haptics_smooth > 100) body->auto_haptics_smooth = 40;
++    if (body->bt_flush_timeout > 0x07FF) body->bt_flush_timeout = 0; // 0=off, max per BT spec
++    if (body->bt_qos_latency_us > 50000) body->bt_qos_latency_us = 0; // 0=off
++    if (body->rumble_haptic_strength > 100) body->rumble_haptic_strength = 50;
++    if (body->effect_leak_volume > 100) body->effect_leak_volume = 0; // 0=off
++    if (body->effect_leak_hp_hz < 100 || body->effect_leak_hp_hz > 5000) body->effect_leak_hp_hz = 800;
+     if (body->enable_wake > 1) {
+         body->enable_wake = 0;
+         printf("[Config] enable_wake is invalid\n");
+--- a/src/config.h
++++ b/src/config.h
+@@ -26,6 +26,20 @@
+     uint8_t disable_mic; // bool: 0 enable (default), 1 disable controller mic
+     uint8_t disable_speaker; // bool: 0 enable (default), 1 disable speaker/headset
+     uint8_t enable_wake; // bool: 0 disabled (default), 1 wake host on PS press (USB remote wakeup)
++    uint8_t auto_haptics_enable;
++    uint8_t auto_haptics_gain;
++    uint16_t auto_haptics_lowpass_hz;
++    uint8_t auto_mute_replace;
++    uint8_t auto_mute_mix;
++    uint8_t auto_haptics_gate; // noise gate threshold [0-100], 0=off; suppresses dialog/quiet content
++    uint8_t auto_haptics_slope; // LP filter slope in dB/oct: 6, 12, or 24
++    uint8_t lightbar_off; // bool: force the RGB lightbar off (e.g. blue glow in Xbox360/DS4 mode)
++    uint8_t auto_haptics_smooth; // 0-100: response smoothing (release/decay), higher=smoother
++    uint16_t bt_flush_timeout; // ACL automatic flush timeout in 0.625ms units; 0=off (infinite)
++    uint16_t bt_qos_latency_us; // QoS requested link latency in microseconds; 0=off
++    uint8_t rumble_haptic_strength; // [0-100] strength of converted DS4Windows rumble blended in Mix mode
++    uint8_t effect_leak_volume; // [0-100] volume of high-passed effect leak through speaker when auto-muted; 0=off
++    uint16_t effect_leak_hp_hz; // high-pass cutoff (Hz) for the effect leak
+ };
+ 
+ struct __attribute__((packed)) Config {
+--- a/src/state_mgr.cpp
++++ b/src/state_mgr.cpp
+@@ -1,12 +1,17 @@
+ //
+ // Created by awalol on 2026/5/15.
+ //
++// Auto-haptics / DS4Windows modifications (c) 2026 Serge — MIT License.
++// The state_set-in-RAM relocation that enables haptic actuation at stock clocks
++// originates from loteran's auto-haptics work on the DS5Dongle. With thanks.
++//
+ 
+ #include "state_mgr.h"
+ 
+ #include <cstddef>
+ #include <cstring>
+ 
++#include "pico.h"
+ #include "config.h"
+ #include "utils.h"
+ 
+@@ -41,11 +46,24 @@
+     set_gain(get_config().speaker_gain);
+ }
+ 
+-void state_set(uint8_t *data, const uint8_t size) {
++void __not_in_flash_func(state_set)(uint8_t *data, const uint8_t size) {
+     if (size > 63) {
+         printf("[StateMgr] Warning: State Set over 63 bytes\n");
+     }
+     memcpy(data, &state, size);
++    // Force the RGB lightbar off in Replace mode (when the toggle is enabled).
++    // Replace = pure audio-derived haptics, typically used in emulated/non-native
++    // scenarios where the game never sends DualSense lightbar commands, so it
++    // sits at a default glow (blue in DS4Windows). In native (auto-haptics Off)
++    // or Mix, the lightbar is left as-is so games can control it (passthrough).
++    if (get_config().lightbar_off &&
++        get_config().auto_haptics_enable == 2 &&
++        size > 46) {
++        data[1] |= 0x04;   // AllowLedColor
++        data[44] = 0x00;   // LedRed
++        data[45] = 0x00;   // LedGreen
++        data[46] = 0x00;   // LedBlue
++    }
+ }
+ 
+ void state_update(const uint8_t *data, const uint8_t size) {
+@@ -79,10 +97,31 @@
+     state.EnableRumbleEmulation = update.EnableRumbleEmulation;
+     state.UseRumbleNotHaptics = update.UseRumbleNotHaptics;
+     state.EnableImprovedRumbleEmulation = update.EnableImprovedRumbleEmulation;
+-    if (update.RumbleEmulationLeft > 0 || update.RumbleEmulationRight > 0) {
++    // When auto-haptics is enabled (Mix/Replace), we drive the haptic ACTUATORS
++    // from audio. Forcing UseRumbleNotHaptics=true (e.g. because DS4Windows sends
++    // rumble) switches the controller to rumble MOTORS and silences the actuator
++    // path our auto-haptics needs. So only force rumble mode when auto-haptics
++    // is OFF (pure native rumble->DualSense conversion).
++    const bool auto_haptics_on = get_config().auto_haptics_enable > 0;
++    // When auto-haptics is on, capture the incoming rumble-emulation motor values
++    // so the audio path can blend them into the actuator signal (rather than using
++    // the controller's separate rumble-motor mode, which conflicts with actuator
++    // haptics). Lets us MIX converted rumble + audio-derived haptics, both through
++    // the actuators, with independent strength control.
++    extern volatile uint8_t g_rumble_l, g_rumble_r;
++    g_rumble_l = update.RumbleEmulationLeft;
++    g_rumble_r = update.RumbleEmulationRight;
++    if (!auto_haptics_on && (update.RumbleEmulationLeft > 0 || update.RumbleEmulationRight > 0)) {
+         // why doesn't ninja gaiden 4 enable UseRumbleNotHaptics
+         state.UseRumbleNotHaptics = true;
+     }
++    if (auto_haptics_on) {
++        // Force actuator (haptic) mode so derived haptics play even while a game
++        // is sending rumble through DS4Windows.
++        state.UseRumbleNotHaptics = false;
++        state.EnableRumbleEmulation = false;
++        state.EnableImprovedRumbleEmulation = false;
++    }
+     if (state.EnableRumbleEmulation ||
+         state.UseRumbleNotHaptics ||
+         state.EnableImprovedRumbleEmulation) {

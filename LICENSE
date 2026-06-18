@@ -1,6 +1,18 @@
 MIT License
 
-Copyright (c) 2026 awalol
+Copyright (c) 2026 awalol (DS5Dongle, base project)
+Copyright (c) 2026 Serge (auto-haptics, DS4Windows compatibility, effect leak, and related modifications)
+
+This project is a derivative of awalol/DS5Dongle (https://github.com/awalol/DS5Dongle),
+which is itself MIT licensed. The original copyright notice is retained above as
+required by the MIT License.
+
+Acknowledgment: the audio-derived auto-haptics in this project were inspired by the
+earlier auto-haptics work of loteran on the DS5Dongle. While the DSP and related
+code here were independently rewritten, loteran's original experiments — in
+particular relocating `state_set` to RAM, which enabled haptic actuation at stock
+clock speeds — were the foundation that made this feature possible. With thanks.
+
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

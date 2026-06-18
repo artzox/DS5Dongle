@@ -704,6 +704,35 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                 } else if (psm == PSM_HID_INTERRUPT) {
                     printf("[L2CAP] HID Interrupt opened cid=0x%04X\n", local_cid);
                     hid_interrupt_cid = local_cid;
+
+                    // Latency: set an automatic flush timeout on the ACL link so
+                    // haptic/output packets that can't get on-air within a few BT
+                    // slots are DROPPED rather than retransmitted late. A stale
+                    // haptic packet arriving late feels worse (laggy/jittery) than
+                    // a momentary gap, so for a real-time haptic stream this trades
+                    // rare tiny dropouts for lower worst-case latency and less
+                    // jitter — closer to USB's fixed cadence. Units are 0.625 ms;
+                    // configurable via bt_flush_timeout (0 = default/infinite).
+                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                        const uint16_t ft = get_config().bt_flush_timeout;
+                        if (ft > 0) {
+                            hci_send_cmd(&hci_write_automatic_flush_timeout, acl_handle, ft);
+                            printf("[L2CAP] Set automatic flush timeout: %u (%.2f ms)\n", ft, ft * 0.625f);
+                        }
+                        // QoS setup: request the baseband schedule this link with a
+                        // tight, consistent service interval (lower latency / less
+                        // poll jitter) — the lever that targets BT slot scheduling
+                        // directly. Guaranteed service, token rate sized for the
+                        // haptic stream, latency from config (us). 0 = don't request.
+                        const uint16_t qos_lat_us = get_config().bt_qos_latency_us;
+                        if (qos_lat_us > 0) {
+                            // flags=0, service_type=2 (Guaranteed), token_rate=8000 B/s,
+                            // peak_bw=8000 B/s, latency=qos_lat_us, delay_var=qos_lat_us
+                            hci_send_cmd(&hci_qos_setup, acl_handle, 0, 2,
+                                         8000, 8000, (uint32_t)qos_lat_us, (uint32_t)qos_lat_us);
+                            printf("[L2CAP] QoS setup requested: latency=%u us\n", qos_lat_us);
+                        }
+                    }
                     // Successful pair removes this specific MAC from the persistent
                     // blacklist (treated as user-explicit re-pair in PS+Share mode).
                     bt_blacklist_remove(current_device_addr);

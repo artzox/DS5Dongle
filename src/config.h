@@ -26,6 +26,20 @@ struct __attribute__((packed)) Config_body {
     uint8_t disable_mic; // bool: 0 enable (default), 1 disable controller mic
     uint8_t disable_speaker; // bool: 0 enable (default), 1 disable speaker/headset
     uint8_t enable_wake; // bool: 0 disabled (default), 1 wake host on PS press (USB remote wakeup)
+    uint8_t auto_haptics_enable;
+    uint8_t auto_haptics_gain;
+    uint16_t auto_haptics_lowpass_hz;
+    uint8_t auto_mute_replace;
+    uint8_t auto_mute_mix;
+    uint8_t auto_haptics_gate; // noise gate threshold [0-100], 0=off; suppresses dialog/quiet content
+    uint8_t auto_haptics_slope; // LP filter slope in dB/oct: 6, 12, or 24
+    uint8_t lightbar_off; // bool: force the RGB lightbar off (e.g. blue glow in Xbox360/DS4 mode)
+    uint8_t auto_haptics_smooth; // 0-100: response smoothing (release/decay), higher=smoother
+    uint16_t bt_flush_timeout; // ACL automatic flush timeout in 0.625ms units; 0=off (infinite)
+    uint16_t bt_qos_latency_us; // QoS requested link latency in microseconds; 0=off
+    uint8_t rumble_haptic_strength; // [0-100] strength of converted DS4Windows rumble blended in Mix mode
+    uint8_t effect_leak_volume; // [0-100] volume of high-passed effect leak through speaker when auto-muted; 0=off
+    uint16_t effect_leak_hp_hz; // high-pass cutoff (Hz) for the effect leak
 };
 
 struct __attribute__((packed)) Config {

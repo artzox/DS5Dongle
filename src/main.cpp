@@ -155,10 +155,6 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
     (void) buffer;
     (void) reqlen;
 
-    if (is_pico_cmd(report_id)) {
-        return pico_cmd_get(report_id, buffer, reqlen);
-    }
-
     // DSE profiles: while the unlock + prefetch is still in progress, return 0
     // (NAK) for profile reads so the PS app retries rather than caching an
     // empty snapshot. Still kick off the background BT fetch.
@@ -169,6 +165,10 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
 
     std::vector<uint8_t> feature_data = get_feature_data(report_id, reqlen);
     if (!feature_data.empty()) {
+        if (report_id == 0x81 && feature_data[0] == 0x66) {
+            memcpy(buffer, feature_data.data(), feature_data.size());
+            return feature_data.size();
+        }
         memcpy(buffer, feature_data.data() + 1, feature_data.size() - 1);
     }
 
@@ -208,14 +208,6 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
     (void) buffer;
     (void) bufsize;
 
-    if (is_pico_cmd(report_id)) {
-#if ENABLE_VERBOSE
-        printf("[HID] Receive 0xf6 setting config, funcid:0x%02X\n", buffer[0]);
-#endif
-        pico_cmd_set(report_id, buffer, bufsize);
-        return;
-    }
-
     // INTERRUPT OUT
     if (report_id == 0) {
         switch (buffer[0]) {
@@ -237,6 +229,15 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
                 break;
             }
         }
+    }
+    if (report_id == 0x80 && bufsize >= 2 && buffer[0] == 0x66) {
+#if ENABLE_VERBOSE
+        printf("[HID] Receive 0x66 setting config, funcid:0x%02X\n", buffer[1]);
+#endif
+
+        // 0x80 0x66 cmd_id payload...
+        pico_cmd_set(buffer[1], buffer + 2, bufsize - 2);
+        return;
     }
     if (report_id == 0x80 ||
         // DSE: Write Profile Block

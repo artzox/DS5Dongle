@@ -1,299 +1,217 @@
-# Pico2W DualSense 5 Bridge
+# DS5Dongle — Audio Auto-Haptics Edition
 
-[中文](./README.CN.md)
+**Version 1.0.0**
 
-> Turn a Raspberry Pi Pico2W (or other compatible board) into a wireless adapter for the DualSense (DS5) controller.
+A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
+(a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
+haptics** for games without native DualSense support, full **DS4Windows
+compatibility**, **converted-rumble blending**, and a **controller-speaker effect
+leak** for added immersion — all configurable from a web-based portal.
 
-***This repository only implements the core functionality of DS5Dongle — making a wireless controller appear as a wired
-connection. For additional features, please refer to [Community Fork](#Community-Fork)***
+Built on **awalol/DS5Dongle v0.7.0**, which relocates the entire BT/USB/audio path
+to RAM so native fine haptics and controller audio work without overclocking.
 
-## Overview
+---
 
-This project enables the Raspberry Pi Pico2W (or other compatible board, e.g. the Waveshare RP2350B-Plus-W) to function as a Bluetooth bridge for the DualSense controller, allowing wireless connectivity with enhanced haptics support.
+## What this adds over the base firmware
 
-## Features
+- **Audio-derived auto-haptics** — generates haptic feedback from game audio for
+  titles that have no native DualSense haptics. Works over Bluetooth.
+- **DS4Windows compatibility** — auto-haptics keep working under DS4Windows in
+  passthrough, DualShock 4, and Xbox 360 emulation modes (the base firmware's
+  rumble handling silenced the haptic actuators; this fixes it).
+- **Three operating modes** — Off (native passthrough / rumble conversion), Mix
+  (native + derived), Replace (derived only).
+- **Converted-rumble blending** — in Mix mode, DS4Windows rumble (from emulated
+  controllers) is converted to actuator vibration and blended with the audio
+  haptics, with independent strength control.
+- **Effect leak** — instead of fully muting the controller speaker, optionally
+  pass a high-passed, low-volume slice of the audio so sharp transient effects
+  (shots, clinks, impacts) come through quietly, like native DualSense games.
+- **Extensive DSP tuning** — intensity, smoothness, noise gate, crossover cutoff,
+  and selectable filter slope (6/12/24 dB/oct).
+- **Lightbar control**, **live RSSI / signal display**, **reboot-to-bootloader**,
+  and **experimental BT latency controls** (flush timeout, QoS).
+- **Sectioned web configuration portal** with auto-reconnect on save.
 
-- 🎮 Full DualSense connectivity via Pico2W (or other compatible board)
-- 🔊 Supports HD haptics (advanced vibration feedback)
-- 🎧 Headset audio output — controller speaker and 3.5 mm jack
-- 🎤 Headset microphone input — the controller mic is exposed as a USB audio input device
-- 📡 Wireless Bluetooth bridging
-- 🔘 BOOTSEL-button controller management — pair, reboot, enter BOOTSEL for flashing, or forget all pairings without unplugging
-- ⚡ Runs at the stock 150 MHz clock — no overclock required
+---
 
-## Getting Started
+## Quick start
 
-### Get the firmware
+1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
+   (or triple-click BOOTSEL on an already-running unit), then copy
+   `ds5dongle-autohaptics-v1.0.0.uf2` to the `RPI-RP2` drive that appears.
+   - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
+     first to clear old settings, then flash this firmware.
+2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
+   downloaded file in Chrome or Edge. (WebHID needs a secure context — opening it
+   directly from a website host or `file://` that the browser flags will fail with
+   a permissions error. Downloading it and opening the local file works, as does
+   serving it from `http://localhost`.)
+3. **Connect.** Click *Connect* and select the DualSense.
+4. **Configure.** Set *Auto Haptics Mode* and tune to taste, then *Save to Device*.
 
-You have two options:
-
-- **Download a pre-built `.uf2`** — grab the newest
-  [Releases](../../releases) build (`ds5-bridge-*.uf2`). No tools needed.
-- **Build it yourself** — see [Build Instructions](#build-instructions)
-  below (Windows users get a one-command script).
-
-### Flashing Firmware
-
-1. Hold the BOOTSEL button on the Pico2W
-2. Connect the Pico2W to your computer via USB
-3. The device will mount as a USB storage device
-4. Drag and drop the .uf2 firmware file onto the device
-
-> The firmware also supports a **reboot-to-BOOTSEL** command: the **Reboot to Bootloader** button in the
-> [web config](#configuration) reboots the dongle into BOOTSEL mode without holding the physical button.
-
-### Pairing the Controller
-
-1. Put the DualSense controller into Bluetooth pairing mode
-2. Wait for the Pico2W to detect and connect
-3. Once connected, the device will appear on the host system
-
-***You may need to replug the Pico when the controller is in pairing mode.***
-
-### BOOTSEL button: switch, reboot, or clear controllers
-
-While the firmware is running, the Pico's **BOOTSEL button** doubles as a
-controller and reset control — no unplugging or re-flashing needed:
-
-- **Short press (click):**
-  - If a controller is connected, the current one is disconnected (its pairing is
-    kept, so it can reconnect later). Use this to free the dongle for a different
-    already-paired controller.
-  - If nothing is connected, a 30-second scan starts to pair a new controller.
-    Put the DualSense into pairing mode (hold **PS + Create/Share** until the
-    light bar flashes) while the scan runs.
-- **Double click:** **Reboot the Pico** — a normal firmware restart: re-enters
-  pairing inquiry, drops the current connection, and recovers from a transient
-  glitch. (Clicks register after a brief pause, to allow for a second/third click.)
-- **Triple click:** **Reboot into BOOTSEL** — the dongle re-enumerates as a USB
-  mass-storage drive so you can drag on a new `.uf2`, without holding BOOTSEL while
-  plugging in.
-- **Long press (~1.5 s):** Disconnect and **forget every paired controller** — all
-  stored pairings are deleted and blacklisted so they won't silently auto-reconnect,
-  even across a power cycle. The onboard LED flashes six times to confirm. To use a
-  forgotten controller again, put it back into **PS + Create/Share** pairing mode.
-
-> Triple click is a software path into the bootloader; you can also still enter it
-> the hardware way by holding BOOTSEL **while plugging in** the Pico (see
-> [Flashing Firmware](#flashing-firmware) above). All of these act on
-> click / double / triple / long-press **while the firmware is already running**.
+---
 
 ## Configuration
 
-You can modify the Pico settings via the web config.
+The portal is organized into four sections.
 
-- For release: https://ds5.awalol.eu.org
-- For development: https://ds5-dev.awalol.eu.org
+### Auto-Haptics
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| Mode | Off / Mix / Replace | Off | Off = native/rumble passthrough; Mix = native + derived; Replace = derived only |
+| Intensity (%) | 0–200 | 100 | Strength of the audio-derived haptics (curved response) |
+| Smoothness | 0–100 | 40 | Higher = smoother/longer decay; lower = snappier |
+| Noise Gate | 0–100 | 20 | Suppresses quiet content (dialog/ambience) below a threshold |
+| LP Cutoff (Hz) | 30–200 | 60 | Crossover — only audio below this drives haptics |
+| Filter Slope | 6 / 12 / 24 dB/oct | 12 | Steeper rejects voice above the cutoff more aggressively |
+| Auto-mute Speaker (Replace) | on/off | on | Mute controller speaker in Replace mode |
+| Auto-mute Speaker (Mix) | on/off | off | Mute controller speaker in Mix mode |
+| Lightbar Off in Replace Mode | on/off | off | Kills the lightbar glow in Replace (e.g. blue in Xbox360 mode) |
+| Converted Rumble Strength (Mix) | 0–100 | 50 | Strength of blended DS4Windows rumble in Mix mode |
+| Effect Leak Volume | 0–100 | 0 (off) | Volume of the high-passed speaker effect leak when auto-muted |
+| Effect Leak High-pass (Hz) | 100–5000 | 800 | Higher = only sharper transients leak through |
 
-## Community Fork
+### Haptics & Audio
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| Native Haptics Gain | 1.0–2.0 | 1.0 | Multiplier on native haptic channels |
+| Speaker Volume | 0–127 | 100 | Controller speaker volume (also scales haptic strength) |
+| Headset Volume | 0–127 | 100 | Headset jack volume |
+| Speaker Gain | 0–7 | — | Controller speaker gain stage |
+| Sync Speaker & Headset Volume | on/off | off | Tie the two volumes together |
+| Lock Volume | on/off | off | Ignore in-game volume changes |
+| Disable Mic | on/off | off | Disable the controller microphone |
+| Disable Speaker | on/off | off | Disable the controller speaker |
 
-### Audio Auto Haptics fork [loteran/DS5Dongle](https://github.com/loteran/DS5Dongle)
+### Device & Connection
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| Polling Rate | 250 / 500 / Real-time | Real-time | USB report rate |
+| Audio Buffer Length | 16–128 | 64 | Lower = snappier haptics; higher = more stable audio (the effect leak needs ~64) |
+| Inactive Time (min) | 5–60 | 12 | Idle timeout before disconnect |
+| Disable Inactive Disconnect | on/off | off | Never auto-disconnect when idle |
+| Disable Pico LED | on/off | off | Turn off the Pico's onboard LED |
 
-> Adds real-time haptic feedback generated from game audio.
-> The Pico listens to the sound stream and converts bass and impact sounds into DualSense rumble — no game-side haptic
-> support needed.
+### Advanced — BT Latency (experimental)
+| Setting | Default | Notes |
+|---|---|---|
+| BT Flush Timeout | Off | Drop stale packets instead of retransmitting. No clear benefit on a strong link; left in for tinkering. |
+| BT QoS Latency | Off | Request a tighter poll interval. Inconclusive in testing; left in for tinkering. |
 
-### DS5_Bridge [SundayMoments/DS5_Bridge](https://github.com/SundayMoments/DS5_Bridge)
+---
 
-> More customization features, such as adjusting audio, haptics, trigger strength, lighting, button remapping, and
-> shortcuts.
+## Modes explained
 
-### OLED Edition [MarcelineVPQ/DS5Dongle-OLED-Edition](https://github.com/MarcelineVPQ/DS5Dongle-OLED-Edition)
+- **Off** — The controller behaves as the base firmware: native DualSense haptics
+  pass through unfiltered, and (with DS4Windows + a single isolated controller)
+  Xbox360/DS4 rumble is converted to DualSense rumble. **Use this for games that
+  already have good native DualSense haptics** — it gives full fidelity.
+- **Mix** — Native haptic channels (low-passed) + audio-derived haptics +
+  optional converted DS4Windows rumble. For games without native haptics where you
+  also want emulated-controller rumble.
+- **Replace** — Audio-derived haptics only. Cleanest option for non-native games.
 
-> OLED Edition is a fork of awalol/DS5Dongle (upstream) that adds an optional Pico-OLED-1.3 128×64 display add-on with
-> 11 screens (status, 4-slot multi-controller pairing, lightbar color picker with favorites and effect presets, trigger
-> test, gyro tilt, touchpad, diagnostics, CPU/clock, BT signal strength, audio VU meters, and a persistent settings menu),
-> plus a DS5 button-combo soft-reboot.
+---
 
-### [zurce/DS5Dongle-OLED](https://github.com/zurce/DS5Dongle-OLED)
+## How it works (brief)
 
-## Notes
+The DualSense haptic actuator is a voice coil that cannot render a near-DC signal,
+so a naive low-pass of the audio produces no motion. This firmware instead uses the
+bass **envelope** of the game audio to amplitude-modulate a 90 Hz carrier that sits
+in the actuator's responsive band — turning "how much bass" into felt rumble. A
+noise gate and a steep, configurable low-pass keep dialog and music from triggering
+the haptics. Under DS4Windows, the firmware keeps the controller in actuator mode
+(rather than letting rumble reports force it into motor mode) so the derived
+haptics keep playing.
 
-The Pico device will only be visible to the system after the controller is connected
+---
 
-Some behaviors depend on reconnection cycles to take effect
+## Notes & known behavior
 
-### Microphone
+- **Saving / PlayStation app:** Settings are written to flash and applied
+  immediately (the portal triggers a reconnect on save so even enumeration-time
+  settings take effect). However, if you have the PlayStation accessory app open,
+  after saving you may need to **wait 2–3 seconds** before reopening the setting to
+  see the updated value, or simply **open it a second time** — the display lags
+  slightly, but the settings are saved correctly.
+- **Effect leak needs a deeper buffer.** Because the leak feeds real audio through
+  the speaker path, it requires **Audio Buffer Length 64** to avoid dropouts. At
+  lower buffer values (e.g. 16) the leak will stutter. Buffer 16 is snappier for
+  haptics-only use; raise it to 64 when using the effect leak.
+- **Bluetooth vs USB latency.** Native haptics over Bluetooth are slightly less
+  tight than over USB — this is inherent to the BT transport (slot scheduling vs
+  USB's fixed microframes) and is not tunable away in firmware. A strong link
+  (check the RSSI display) keeps it as good as it gets.
+- **WebHID requires Chrome/Edge** and a secure context (download the portal file or
+  serve from localhost). Firefox and Safari do not support WebHID.
+- **Always nuke after a structure change.** When updating to a firmware build with
+  changed settings, flash `flash_nuke.uf2` first, then this firmware, to avoid
+  stale/garbage settings.
 
-The controller microphone is exposed as a USB audio input — "Headset Microphone"
-on Windows. After selecting it as your recording device, raise its input/capture
-level in your OS: Windows in particular often defaults it to 0 (or very low),
-which makes the mic seem dead even though it is working.
+---
 
-### Low-battery LED indicator
+## Building from source
 
-When the connected DualSense reports its battery at or below 10% (and it is not charging), the Pico onboard LED switches
-from solid-on to a 1 Hz blink so you can see the warning at a glance. The LED returns to solid-on as soon as the
-controller is plugged in or its reported level rises again. The blink also fires when `disable_pico_led` is set — the
-warning is treated as critical and overrides the LED-off preference; the LED returns to its disabled (off) state once
-the battery recovers or the controller starts charging.
-
-To opt out at build time, configure with `-DENABLE_BATT_LED=OFF`. Default is ON.
-
-### Pico W Version
-
-Pico W only has haptics support, no speaker. You can enable Pico W firmware compilation with `-DPICO_W_BUILD=ON`, or
-download precompiled firmware from GitHub Actions.
-
-### Waveshare RP2350B-Plus-W
-
-The [Waveshare RP2350B-Plus-W](https://www.waveshare.com/wiki/RP2350B-Plus-W) is an RP2350B-based board with the RM2 wireless module (same CYW43 silicon as the Pico 2 W), 16 MB QSPI flash, and a USB-C connector. Build with:
-
-```
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DPICO_SDK_PATH=<sdk> -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON
-cmake --build build --target ds5-bridge
-```
-
-Or download precompiled firmware from GitHub Actions.
-
-### USB Wake Feature
-
-Wake-on-PS is now built into the standard firmware — there is no separate `feat/usb-wake` branch or `ds5-bridge-wake.uf2`
-build. It is **disabled by default**; turn it on with the **Wake PC from sleep on PS button** toggle in the
-[web config](#configuration). When enabled, the dongle presents a HID keyboard interface and advertises USB remote
-wakeup so a controller button can wake the PC; when disabled, that interface is not enumerated. See
-[Wake-on-PS](#wake-on-ps-optional) for setup.
-
-It is recommended to read #60 and #61 before using this feature.
-
-## Known Issues
-
-- ⚠️ Audio may experience slight stuttering
-
-## Performance
-
-The audio path — libopus encode/decode, the resampler, and the Bluetooth/USB
-packet handling on the hot path — executes from **RAM** instead of flash. This
-removes flash-fetch (XIP cache miss) stalls from the time-critical audio loop,
-which previously forced the RP2350 to be overclocked just to keep up with audio
-encoding.
-
-As a result, the firmware runs the **full audio path (haptics, speaker, 3.5 mm
-output, and microphone) at the stock 150 MHz clock — no overclock and no
-core-voltage bump.**
-
-> Earlier releases required 320 MHz @ 1.2 V; overclocking is no longer needed.
-> If you build for a different board and it fails to boot, reduce the CPU
-> frequency (and/or raise the voltage) in `CMakeLists.txt`.
-
-## Build Instructions
-
-### Windows 11 (one command, no WSL)
-
-You don't even need to clone this repo. Download just
-[`tools/build-windows.ps1`](tools/build-windows.ps1) to any folder and run
-it in **PowerShell**:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
-```
-
-(If you already have a checkout, run `tools\build-windows.ps1` from the
-repo root instead — it detects and uses your local checkout.)
-
-The script installs every prerequisite (CMake, Ninja, Python, Git and the
-ARM GNU toolchain — via `winget`, falling back to portable downloads if
-`winget` is unavailable), clones the project (if not run from a checkout)
-plus the pinned Pico SDK + TinyUSB into `%USERPROFILE%\.ds5-build`, builds
-the firmware, and drops `ds5-bridge.uf2` next to the script and on your
-Desktop. It is safe to re-run; already-installed tools are skipped.
-
-Build a fork or a specific ref with `-Repo <url>` / `-Ref <branch|tag>`.
-
-Build a variant with `-Variant debug`.
-
-### Other platforms
-
-To build from source manually:
-
-1. Install the Pico SDK 2.2.0 and switch its TinyUSB submodule to tag 0.20.0
-   i.e. ***Update TinyUSB in the Pico SDK to the latest version***
-2. Initialise this repo's submodules: `git submodule update --init --recursive`
-3. Configure and build with the standard Pico SDK toolchain:
-   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_PATH=<sdk>`
-   then `cmake --build build --target ds5-bridge`
-
-1. ***Update TinyUSB in the Pico SDK to the latest version***
-2. Compile using standard Pico SDK toolchain
-
-On macOS, `tools/build-macos.sh` can prepare a repo-local Pico SDK checkout, prompt to install missing Homebrew build
-tools, initialize submodules, pin TinyUSB, and build the firmware:
+Requires the Pico SDK (2.x) with the Pico 2W board support.
 
 ```sh
-tools/build-macos.sh
+git clone https://github.com/awalol/DS5Dongle.git
+cd DS5Dongle
+git checkout v0.7.0
+# apply the changes:
+git apply /path/to/ds5dongle-autohaptics.patch
+# or copy the files from src/ over the originals
+
+mkdir build && cd build
+cmake .. -DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_BOARD=pico2_w
+make -j
 ```
 
-Use `tools/build-macos.sh --clean` to rebuild from scratch, or
-`--sdk-dir <path>` to use an existing SDK checkout. When using `--sdk-dir`, the script asks before checking that SDK out
-to the required Pico SDK and TinyUSB versions. If Homebrew's `arm-none-eabi-gcc` formula is installed without standard C
-headers, the script asks to install the complete `gcc-arm-embedded` cask and points CMake at that toolchain.
+The resulting `ds5-bridge.uf2` is the firmware.
 
-## Xbox Game Bar (optional)
+### Modified files
+- `src/audio.cpp` — auto-haptics DSP (channel detection, filter cascade, envelope,
+  noise gate, carrier modulation, converted-rumble blend, effect leak, speaker mute)
+- `src/state_mgr.cpp` — DS4Windows rumble-mode fix, rumble value capture,
+  lightbar-off-in-Replace, `state_set` in RAM
+- `src/bt.cpp` — BT flush timeout / QoS controls
+- `src/config.h` / `src/config.cpp` — config fields, validation, defaults
+- `src/cmd.cpp` — config field-ID read/write handlers, reboot-to-bootloader
 
-The **PS button = Xbox Game Bar** toggle in the [web config](#configuration) maps the controller's PS button to
-keyboard shortcuts, sent over the same HID keyboard interface used by [Wake-on-PS](#wake-on-ps-optional):
+---
 
-- **Short press** (tap and release) → `Win`+`G`, which opens the **Xbox Game Bar** overlay.
-- **Long press** (hold ≥ 750 ms) → `Win`+`Tab`, which opens **Task View**.
+## Credits & license
 
-The toggle is off by default, and the keyboard interface is only enumerated while it (or wake) is enabled. Note this
-only *opens* the Game Bar: the DualSense is not an XInput gamepad, so Windows won't let the controller navigate the
-overlay — use a mouse or keyboard for that.
+This is a derivative of **[awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)**,
+which in turn builds on earlier community work on the DualSense dongle concept.
 
-## Wake-on-PS (optional)
+**Auto-haptics origin — thanks to loteran.** The audio-derived auto-haptics in this
+project were inspired by **loteran's** earlier auto-haptics experiments on the
+DS5Dongle. The single most important insight came from loteran: relocating
+`state_set` to RAM, which is what allows the haptic actuators to fire at stock clock
+speeds (150 MHz) instead of requiring an overclock. The DSP and supporting code here
+were rewritten from scratch (carrier modulation, channel detection, the noise gate,
+the DS4Windows handling, the effect leak, and the config protocol are new), but
+loteran's groundwork is what made the whole feature possible. This release would not
+exist without it — thank you.
 
-Enabling the **Wake PC from sleep on PS button** toggle in the [web config](#configuration) makes the dongle present a
-second HID interface (a boot keyboard) and advertise USB remote wakeup. A controller button press while the host is
-suspended then injects an **F15** keypress, waking the PC from **S3 sleep**. F15 was chosen because it has no default
-Windows or app binding — a stray fire never inserts characters or triggers shortcuts. The toggle is off by default, and
-the keyboard interface is only enumerated while it (or the Xbox Game Bar shortcut) is enabled.
+Thanks also to the broader DS5Dongle contributors and to awalol for the complete
+RAM relocation in v0.7.0 that keeps native haptics and controller audio working
+without overclocking.
 
-Scope: **S3 only.** Modern Standby (S0ix) is not supported. To check your machine, run `powercfg /a` — you need
-"Standby (S3)" listed under available sleep states.
+Licensed under the **MIT License** — see [LICENSE](LICENSE). The original awalol
+copyright notice is preserved as required.
 
-After enabling the toggle (then **Reconnect USB** so the interface re-enumerates):
+---
 
-1. Open Device Manager → the new **HID Keyboard Device** (and its parent **USB Composite Device**) → Properties → Power
-   Management → tick **"Allow this device to wake the computer."**
-2. Verify with `powercfg /devicequery wake_armed`.
-3. Sleep the PC; press any button on the controller; the PC should wake within ~1 s.
-4. After a wake, `powercfg /lastwake` should attribute the wake to the HID Keyboard Device.
+## Files in this release
 
-> Wake also needs `SelectiveSuspendEnabled = 1` (a `REG_DWORD`) on the controller's audio interface (`MI_00`). Windows
-> only writes it at first install, so a runtime toggle may need it set manually. It lives under each per-instance
-> `Device Parameters` key:
->
-> ```
-> HKLM\SYSTEM\CurrentControlSet\Enum\USB\VID_054C&PID_0CE6&MI_00\<instance>\Device Parameters
->     SelectiveSuspendEnabled    (REG_DWORD) = 1
-> ```
->
-> `PID_0CE6` is the DualSense (`PID_0DF2` for the Edge), and `<instance>` is device/port-specific (e.g.
-> `6&212078ea&1&0000`), so there can be more than one node — set it on every one. An elevated PowerShell one-liner that
-> covers all present instances:
->
-> ```powershell
-> Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\USB\VID_054C&PID_0CE6&MI_00' | ForEach-Object {
->   New-ItemProperty "$($_.PSPath)\Device Parameters" SelectiveSuspendEnabled -Value 1 -PropertyType DWord -Force }
-> ```
->
-> Then Reconnect USB or reboot. (Re-installing the device — clearing its Windows device cache and replugging — also
-> makes Windows write the value itself.)
-
-## Roadmap
-
-- Please check out [DS5Dongle plan](https://github.com/users/awalol/projects/5)
-
-## Community
-
-- Join the Discord server: [Discord Server](https://discord.gg/hM4ntchGCa)
-- If you have a bug, please open an issue instead.
-
-## References
-
-- [rafaelvaloto/Pico_W-Dualsense](https://github.com/rafaelvaloto/Pico_W-Dualsense) — Project inspiration
-- [egormanga/SAxense](https://github.com/egormanga/SAxense) — Bluetooth Haptics POC
-- [https://controllers.fandom.com/wiki/Sony_DualSense](https://controllers.fandom.com/wiki/Sony_DualSense) - DualSense
-  data report structure documentation
-- [Paliverse/DualSenseX](https://github.com/Paliverse/DualSenseX) — Speaker report packet
+- `ds5dongle-autohaptics-v1.0.0.uf2` — the firmware (flash this)
+- `ds5-config-portal.html` — the web configuration portal (download and open)
+- `src/` — the modified source files
+- `ds5dongle-autohaptics.patch` — unified diff against awalol v0.7.0
+- `LICENSE` — MIT license
+- `README.md` — this file
+- `CHANGELOG.md` — version history
