@@ -657,6 +657,13 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                     // reads are gated until the snapshot is prepared.
                     dse_on_connect();
 #if !ENABLE_SERIAL
+                    // With wake enabled, the previous disconnect skipped
+                    // tud_disconnect() to stay on the bus, so the USB device is
+                    // still connected here and a bare tud_connect() is a no-op —
+                    // leaving the controller stuck (yellow LED, non-functional)
+                    // until a physical replug. Force a clean re-enumeration so the
+                    // host sees a fresh connect and the handshake completes.
+                    if (get_config().enable_wake) { tud_disconnect(); sleep_ms(120); }
                     tud_connect();
 #endif
                 } else if (packet[0] == 0x02) {
@@ -664,6 +671,10 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                     check_dse = false;
                     is_dse = false;
 #if !ENABLE_SERIAL
+                    // See note above: cycle USB cleanly when wake kept the device
+                    // on the bus, so the fresh connection actually enumerates
+                    // (fixes the stuck yellow-LED, non-functional connection).
+                    if (get_config().enable_wake) { tud_disconnect(); sleep_ms(120); }
                     tud_connect();
 #endif
                 }
