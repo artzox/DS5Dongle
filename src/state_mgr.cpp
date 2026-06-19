@@ -66,15 +66,23 @@ void __not_in_flash_func(state_set)(uint8_t *data, const uint8_t size) {
     }
 }
 
-void state_update(const uint8_t *data, const uint8_t size) {
+bool state_update(const uint8_t *data, const uint8_t size) {
     if (size > sizeof(SetStateData)) {
         printf(
             "[StateMgr] Error: SetStateData max %u bytes, request %u\n",
             static_cast<unsigned>(sizeof(SetStateData)),
             size
         );
-        return;
+        return false;
     }
+
+    // Snapshot the state before applying the update so we can detect whether the
+    // controller-facing output actually changed (upstream "Fix stuck rumble"). When
+    // the speaker is active, main.cpp skips re-sending the state to the controller
+    // for efficiency — but that swallowed rumble start/stop commands, leaving the
+    // motors stuck on. We now report whether anything changed so a genuine rumble
+    // change is still sent even while audio is playing.
+    SetStateData old_state = state;
 
     SetStateData update{};
     memcpy(&update, data, size);
@@ -210,6 +218,20 @@ void state_update(const uint8_t *data, const uint8_t size) {
         offsetof(SetStateData, LedRed),
         sizeof(update.LedRed) * 3
     );
+
+    // Did the controller-facing output change? Compare the rumble/motor region
+    // (first 32 bytes) and the remaining fields past the flag bytes (from offset
+    // 36). If so, main.cpp must send the update even when the speaker is active,
+    // otherwise a rumble stop can be swallowed and the motors stay stuck on.
+    bool changed = false;
+    if (memcmp(&old_state, &state, 32) != 0) {
+        changed = true;
+    } else if (memcmp(reinterpret_cast<const uint8_t *>(&old_state) + 36,
+                      reinterpret_cast<const uint8_t *>(&state) + 36,
+                      sizeof(SetStateData) - 36) != 0) {
+        changed = true;
+    }
+    return changed;
 }
 
 void set_volume(const uint8_t value) {

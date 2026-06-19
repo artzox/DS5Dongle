@@ -8,7 +8,7 @@
 
 void state_init();
 void state_set(uint8_t *data, uint8_t size);
-void state_update(const uint8_t *data, uint8_t size);
+bool state_update(const uint8_t *data, uint8_t size);
 void set_volume(uint8_t value);
 void set_volume(uint8_t speaker, uint8_t headset);
 
