@@ -489,6 +489,19 @@
  };
  
  struct __attribute__((packed)) Config {
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -212,8 +212,8 @@
+     if (report_id == 0) {
+         switch (buffer[0]) {
+             case 0x02: {
+-                state_update(buffer + 1, bufsize - 1);
+-                if (spk_active) {
++                bool changed = state_update(buffer + 1, bufsize - 1);
++                if (spk_active && !changed) {
+                     break;
+                 }
+                 uint8_t outputData[78]{};
 --- a/src/state_mgr.cpp
 +++ b/src/state_mgr.cpp
 @@ -1,12 +1,17 @@
@@ -509,7 +522,7 @@
  #include "config.h"
  #include "utils.h"
  
-@@ -41,11 +46,24 @@
+@@ -41,23 +46,44 @@
      set_gain(get_config().speaker_gain);
  }
  
@@ -534,8 +547,30 @@
 +    }
  }
  
- void state_update(const uint8_t *data, const uint8_t size) {
-@@ -79,10 +97,31 @@
+-void state_update(const uint8_t *data, const uint8_t size) {
++bool state_update(const uint8_t *data, const uint8_t size) {
+     if (size > sizeof(SetStateData)) {
+         printf(
+             "[StateMgr] Error: SetStateData max %u bytes, request %u\n",
+             static_cast<unsigned>(sizeof(SetStateData)),
+             size
+         );
+-        return;
++        return false;
+     }
+ 
++    // Snapshot the state before applying the update so we can detect whether the
++    // controller-facing output actually changed (upstream "Fix stuck rumble"). When
++    // the speaker is active, main.cpp skips re-sending the state to the controller
++    // for efficiency — but that swallowed rumble start/stop commands, leaving the
++    // motors stuck on. We now report whether anything changed so a genuine rumble
++    // change is still sent even while audio is playing.
++    SetStateData old_state = state;
++
+     SetStateData update{};
+     memcpy(&update, data, size);
+ 
+@@ -79,10 +105,31 @@
      state.EnableRumbleEmulation = update.EnableRumbleEmulation;
      state.UseRumbleNotHaptics = update.UseRumbleNotHaptics;
      state.EnableImprovedRumbleEmulation = update.EnableImprovedRumbleEmulation;
@@ -568,3 +603,35 @@
      if (state.EnableRumbleEmulation ||
          state.UseRumbleNotHaptics ||
          state.EnableImprovedRumbleEmulation) {
+@@ -171,6 +218,20 @@
+         offsetof(SetStateData, LedRed),
+         sizeof(update.LedRed) * 3
+     );
++
++    // Did the controller-facing output change? Compare the rumble/motor region
++    // (first 32 bytes) and the remaining fields past the flag bytes (from offset
++    // 36). If so, main.cpp must send the update even when the speaker is active,
++    // otherwise a rumble stop can be swallowed and the motors stay stuck on.
++    bool changed = false;
++    if (memcmp(&old_state, &state, 32) != 0) {
++        changed = true;
++    } else if (memcmp(reinterpret_cast<const uint8_t *>(&old_state) + 36,
++                      reinterpret_cast<const uint8_t *>(&state) + 36,
++                      sizeof(SetStateData) - 36) != 0) {
++        changed = true;
++    }
++    return changed;
+ }
+ 
+ void set_volume(const uint8_t value) {
+--- a/src/state_mgr.h
++++ b/src/state_mgr.h
+@@ -8,7 +8,7 @@
+ 
+ void state_init();
+ void state_set(uint8_t *data, uint8_t size);
+-void state_update(const uint8_t *data, uint8_t size);
++bool state_update(const uint8_t *data, uint8_t size);
+ void set_volume(uint8_t value);
+ void set_volume(uint8_t speaker, uint8_t headset);
+ 

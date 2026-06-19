@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.0.1-hotfix**
+**Version 1.0.1-hotfix2**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -45,7 +45,7 @@ v0.7.0 base and is exposed here as a portal toggle.
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5dongle-autohaptics-v1.0.1-hotfix.uf2` to the `RPI-RP2` drive that appears.
+   `ds5dongle-autohaptics-v1.0.1-hotfix2.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -284,6 +284,7 @@ The resulting `ds5-bridge.uf2` is the firmware.
 - `src/bt.cpp` — BT flush timeout / QoS controls, RSSI signal strength readout
 - `src/config.h` / `src/config.cpp` — config fields, validation, defaults
 - `src/cmd.cpp` — config field-ID read/write handlers, diagnostics, reboot-to-bootloader
+- `src/main.cpp` / `src/state_mgr.h` — stuck-rumble fix (send state to the controller when it changes even while the speaker is active)
 
 ---
 
@@ -313,7 +314,7 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5dongle-autohaptics-v1.0.1-hotfix.uf2` — the firmware (flash this)
+- `ds5dongle-autohaptics-v1.0.1-hotfix2.uf2` — the firmware (flash this)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `src/` — the modified source files
 - `ds5dongle-autohaptics.patch` — unified diff against awalol v0.7.0

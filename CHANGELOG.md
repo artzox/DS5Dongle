@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.1-hotfix2] — 2026-06-19
+
+Adds an upstream stuck-rumble fix, ported to this build.
+
+### Fixed
+- **Stuck rumble while audio is active.** When the controller speaker was active
+  (which is the case whenever audio passthrough or auto-haptics is in use), the
+  firmware skipped re-sending state to the controller for efficiency — which
+  swallowed rumble start/stop commands and could leave the motors stuck on. The
+  state update now reports whether the controller-facing output actually changed,
+  and the change is sent even while the speaker is active, so rumble starts and
+  stops are no longer dropped. (Ports mik9's upstream "Fix stuck rumble" to the
+  v0.7.0 base used here.)
+
+### Note
+- A side effect of the rumble path now being complete is that converted rumble in
+  Mix mode may feel slightly stronger than before (rumble commands that were
+  previously dropped now apply). Rebalance with **Converted Rumble Strength** if
+  needed. This does not affect audio-derived auto-haptics, which run through a
+  separate path.
+
 ## [1.0.1-hotfix] — 2026-06-19
 
 Hotfix over 1.0.1 addressing a wake-related connection bug.
@@ -113,6 +134,7 @@ Initial internal build. Built on awalol/DS5Dongle v0.7.0.
 - The firmware ships with stock defaults; see the README "Suggested setup" for a
   tuned auto-haptics + effect-leak configuration to apply in the portal.
 
+[1.0.1-hotfix2]: https://github.com/awalol/DS5Dongle
 [1.0.1-hotfix]: https://github.com/awalol/DS5Dongle
 [1.0.1]: https://github.com/awalol/DS5Dongle
 [1.0.0]: https://github.com/awalol/DS5Dongle
