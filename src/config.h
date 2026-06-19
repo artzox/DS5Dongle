@@ -39,7 +39,11 @@ struct __attribute__((packed)) Config_body {
     uint16_t bt_qos_latency_us; // QoS requested link latency in microseconds; 0=off
     uint8_t rumble_haptic_strength; // [0-100] strength of converted DS4Windows rumble blended in Mix mode
     uint8_t effect_leak_volume; // [0-100] volume of high-passed effect leak through speaker when auto-muted; 0=off
-    uint16_t effect_leak_hp_hz; // high-pass cutoff (Hz) for the effect leak
+    uint16_t effect_leak_hp_hz; // high-pass cutoff (Hz) for the effect leak detection band
+    uint8_t effect_leak_sensitivity; // [0-100] transient detection sensitivity; higher=more eager (more leaks through)
+    uint8_t effect_leak_decay; // [0-100] fade-out length after a transient; higher=longer/more gradual tail
+    uint8_t effect_leak_attack; // [0-100] gate open speed; higher=more immediate (less delay)
+    uint16_t effect_leak_output_hp_hz; // output high-pass cutoff (Hz) — protects speaker from low-freq popping
 };
 
 struct __attribute__((packed)) Config {

@@ -127,6 +127,10 @@ void config_valid() {
     if (body->rumble_haptic_strength > 100) body->rumble_haptic_strength = 50;
     if (body->effect_leak_volume > 100) body->effect_leak_volume = 0; // 0=off
     if (body->effect_leak_hp_hz < 100 || body->effect_leak_hp_hz > 5000) body->effect_leak_hp_hz = 800;
+    if (body->effect_leak_sensitivity > 100) body->effect_leak_sensitivity = 50;
+    if (body->effect_leak_decay > 100) body->effect_leak_decay = 40;
+    if (body->effect_leak_attack > 100) body->effect_leak_attack = 50;
+    if (body->effect_leak_output_hp_hz < 50 || body->effect_leak_output_hp_hz > 2000) body->effect_leak_output_hp_hz = 200;
     if (body->enable_wake > 1) {
         body->enable_wake = 0;
         printf("[Config] enable_wake is invalid\n");

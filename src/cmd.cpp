@@ -160,6 +160,10 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
         case 0x1d: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.rumble_haptic_strength=v; break; }
         case 0x1e: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_volume=v; break; }
         case 0x1f: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_hp_hz=v; break; }
+        case 0x23: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_sensitivity=v; break; }
+        case 0x24: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_decay=v; break; }
+        case 0x25: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_attack=v; break; }
+        case 0x26: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_output_hp_hz=v; break; }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
             return false;
@@ -223,6 +227,10 @@ static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize
         case 0x1d: return write_config_value(buffer, bufsize, config.rumble_haptic_strength);
         case 0x1e: return write_config_value(buffer, bufsize, config.effect_leak_volume);
         case 0x1f: return write_config_value(buffer, bufsize, config.effect_leak_hp_hz);
+        case 0x23: return write_config_value(buffer, bufsize, config.effect_leak_sensitivity);
+        case 0x24: return write_config_value(buffer, bufsize, config.effect_leak_decay);
+        case 0x25: return write_config_value(buffer, bufsize, config.effect_leak_attack);
+        case 0x26: return write_config_value(buffer, bufsize, config.effect_leak_output_hp_hz);
         case 0x20: { extern volatile uint16_t g_diag_bytes_read; return write_config_value(buffer, bufsize, (uint16_t)g_diag_bytes_read); }
         case 0x21: { extern volatile uint8_t g_diag_actual_ch; return write_config_value(buffer, bufsize, (uint8_t)g_diag_actual_ch); }
         case 0x22: { int8_t rssi = 0; bt_get_signal_strength(&rssi); return write_config_value(buffer, bufsize, (uint8_t)rssi); }

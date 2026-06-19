@@ -210,29 +210,80 @@ void __not_in_flash_func(audio_loop)() {
     // dB/oct value (6/12/24); map to pole count.
     const uint8_t slope_db = get_config().auto_haptics_slope;
     const int n_poles = (slope_db >= 24) ? 4 : (slope_db >= 12) ? 2 : 1;
-    // Effect leak: when auto-mute would fully silence the speaker, optionally let
-    // a high-passed, low-volume version through. High-pass keeps sharp transient
-    // effects (shots, clinks, mechanical impacts) and rejects the low-mid drone of
-    // dialog/music, so you get a subtle "detail layer" like native DualSense games
-    // — without the full soundtrack. leak_vol 0 = fully muted (off).
+    // Effect leak (transient detection): when auto-mute would fully silence the
+    // speaker, only open it briefly during sharp ONSETS — sudden level jumps like
+    // impacts, shots, clinks — and keep it closed for sustained sound (dialog,
+    // music, ambience). A plain high-pass leaks all sustained high-frequency
+    // content (hiss, music treble); transient detection instead reacts to how
+    // FAST the level rises, so only percussive effects pass. leak_vol 0 = off.
     const float leak_vol = get_config().effect_leak_volume / 100.0f;
     const bool leak_active = (mute_for_mode && !mute[0] && leak_vol > 0.0f);
-    // High-pass cutoff for the leak (separate from haptic LP). Higher = only the
-    // sharpest transients pass. ~800 Hz keeps effects, drops voice fundamentals.
-    static float hp_l = 0.0f, hp_r = 0.0f; // high-pass state (1-pole, via LP subtraction)
+    // Detection runs on a high-passed copy so low-frequency dialog onsets don't
+    // trigger it. The configured "high-pass" value doubles as the detection band.
+    static float hp_l = 0.0f, hp_r = 0.0f;          // high-pass state (for detection input)
+    static float ohp_l = 0.0f, ohp_r = 0.0f;        // output high-pass state (speaker protection)
+    // Output high-pass: the controller speaker is a tiny driver that can't
+    // reproduce deep bass — feeding it low frequencies makes the cone hit its
+    // excursion limit and POP/distort. Strip the lows from the OUTPUT (separate
+    // from the detection high-pass) so the speaker only gets what it can play.
+    // Configurable cutoff; ~150-300 Hz is typically enough to stop popping.
+    const float ohp_fc = (float)get_config().effect_leak_output_hp_hz;
+    const float ohp_a = 1.0f - expf(-2.0f * (float)M_PI * ohp_fc / 48000.0f);
+    static float env_fast = 0.0f, env_slow = 0.0f;  // fast/slow level envelopes
+    static float leak_gain = 0.0f;                   // smoothed open/close gain
     const float hp_fc = (float)get_config().effect_leak_hp_hz;
     const float hp_a = 1.0f - expf(-2.0f * (float)M_PI * hp_fc / 48000.0f);
+    // Sensitivity: how much the fast envelope must exceed the slow one to count as
+    // a transient. Higher sensitivity (config 0-100) -> lower ratio -> opens more
+    // easily (more sound leaks). Maps 0->ratio 3.0 (very selective, only big hits)
+    // .. 100->ratio 1.2 (eager, most onsets pass). Default ~50 -> ~2.1.
+    const uint8_t sens_cfg = get_config().effect_leak_sensitivity > 100 ? 50 : get_config().effect_leak_sensitivity;
+    const float TRANS_RATIO = 3.0f - (sens_cfg / 100.0f) * 1.8f;
+    const float ENV_FAST_A  = 0.65f;  // fast envelope attack — quicker detection (less delay)
+    const float ENV_SLOW_A  = 0.0020f;// slow envelope (~tracks the ongoing level)
+    // Gate ramps: opening too fast creates a click at the onset (crackle); a few
+    // ms ramp removes the click while staying responsive. Close SLOWLY so the hit
+    // rings out and fades gradually instead of stopping abruptly. The close rate
+    // (decay/fade-out length) is configurable: higher decay -> smaller coefficient
+    // -> longer, more gradual tail. 0 -> ~0.004 (quick), 100 -> ~0.0004 (very long).
+    const uint8_t decay_cfg = get_config().effect_leak_decay > 100 ? 40 : get_config().effect_leak_decay;
+    // Attack (responsiveness): how fast the gate opens once a transient is
+    // detected. Faster = more immediate hit (less perceived delay) but can add a
+    // faint click on the sharpest onsets; slower = smoother but feels delayed.
+    // Configurable 0-100: 0 -> 0.03 (smooth), 100 -> 0.40 (near-instant).
+    const uint8_t atk_cfg = get_config().effect_leak_attack > 100 ? 50 : get_config().effect_leak_attack;
+    const float GATE_OPEN   = 0.03f + (atk_cfg / 100.0f) * 0.37f;
+    const float GATE_CLOSE  = 0.004f - (decay_cfg / 100.0f) * 0.0036f; // 0.004 .. 0.0004
     for (int i = 0; i < nframes; i++) {
  #if !DISABLE_SPEAKER_PROC       
         float spk_l_out, spk_r_out;
         if (leak_active) {
-            // High-pass = signal - low-pass. Keeps transients/highs, drops lows.
             const float in_l = raw[i * actual_ch]     / 32768.0f;
             const float in_r = raw[i * actual_ch + 1] / 32768.0f;
+            // High-pass (signal - low-pass) — used ONLY for transient DETECTION,
+            // not for output. Outputting the thin treble-only signal is what
+            // caused the crackle; we detect on highs but play the full sound.
             hp_l += hp_a * (in_l - hp_l);
             hp_r += hp_a * (in_r - hp_r);
-            spk_l_out = (in_l - hp_l) * leak_vol;
-            spk_r_out = (in_r - hp_r) * leak_vol;
+            const float hpf_l = in_l - hp_l;
+            const float hpf_r = in_r - hp_r;
+            const float mag = 0.5f * ((hpf_l<0?-hpf_l:hpf_l) + (hpf_r<0?-hpf_r:hpf_r));
+            // Fast envelope reacts to onsets; slow envelope tracks the baseline.
+            env_fast += ((mag > env_fast) ? ENV_FAST_A : ENV_FAST_A*0.25f) * (mag - env_fast);
+            env_slow += ENV_SLOW_A * (mag - env_slow);
+            // Transient when the fast envelope jumps well above the slow baseline.
+            const bool transient = (env_fast > env_slow * TRANS_RATIO + 0.0008f);
+            const float target = transient ? 1.0f : 0.0f;
+            leak_gain += ((target > leak_gain) ? GATE_OPEN : GATE_CLOSE) * (target - leak_gain);
+            // Output the FULL-BAND audio, smoothly gated by the transient detector,
+            // but first high-pass it to remove the deep bass that pops the speaker.
+            // (Detection used the full content; output is protected.)
+            ohp_l += ohp_a * (in_l - ohp_l);
+            ohp_r += ohp_a * (in_r - ohp_r);
+            const float out_l = in_l - ohp_l; // high-passed (lows removed)
+            const float out_r = in_r - ohp_r;
+            spk_l_out = out_l * leak_gain * leak_vol;
+            spk_r_out = out_r * leak_gain * leak_vol;
         } else {
             spk_l_out = raw[i * actual_ch]     / 32768.0f * spk_gain;
             spk_r_out = raw[i * actual_ch + 1] / 32768.0f * spk_gain;
@@ -423,7 +474,7 @@ void audio_init() {
     queue_init(&mic_fifo, sizeof(mic_element), 2);
     queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
 #if !DISABLE_SPEAKER_PROC
-    queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
+    queue_init(&audio_fifo, sizeof(audio_raw_element), 1);
     critical_section_init(&opus_cs);
     multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
 #endif
