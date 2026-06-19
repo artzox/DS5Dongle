@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.0.0**
+**Version 1.0.1**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -26,13 +26,18 @@ to RAM so native fine haptics and controller audio work without overclocking.
   controllers) is converted to actuator vibration and blended with the audio
   haptics, with independent strength control.
 - **Effect leak** — instead of fully muting the controller speaker, optionally
-  pass a high-passed, low-volume slice of the audio so sharp transient effects
-  (shots, clinks, impacts) come through quietly, like native DualSense games.
+  pass sharp transient effects (shots, clinks, impacts) through the speaker via
+  transient detection, so discrete effects come through while sustained dialog and
+  music stay muted — like native DualSense games.
 - **Extensive DSP tuning** — intensity, smoothness, noise gate, crossover cutoff,
   and selectable filter slope (6/12/24 dB/oct).
 - **Lightbar control**, **live RSSI / signal display**, **reboot-to-bootloader**,
   and **experimental BT latency controls** (flush timeout, QoS).
-- **Sectioned web configuration portal** with auto-reconnect on save.
+- **Sectioned web configuration portal** with smart save (only reconnects when a
+  setting that requires re-enumeration changed).
+
+The **Wake PC on PS Button** feature (USB remote wakeup) is part of the awalol
+v0.7.0 base and is exposed here as a portal toggle.
 
 ---
 
@@ -40,7 +45,7 @@ to RAM so native fine haptics and controller audio work without overclocking.
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5dongle-autohaptics-v1.0.0.uf2` to the `RPI-RP2` drive that appears.
+   `ds5dongle-autohaptics-v1.0.1.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -51,9 +56,82 @@ to RAM so native fine haptics and controller audio work without overclocking.
 3. **Connect.** Click *Connect* and select the DualSense.
 4. **Configure.** Set *Auto Haptics Mode* and tune to taste, then *Save to Device*.
 
+The firmware ships with safe stock defaults (auto-haptics off, standard buffer),
+so a fresh flash works out of the box with no required configuration. For a tuned
+auto-haptics + immersion setup, see **Suggested setup** below.
+
 ---
 
-## Configuration
+## Suggested setup
+
+These are good starting values for using auto-haptics with audio passthrough and
+the effect leak, tuned on a real DualSense over Bluetooth. They are *suggestions* —
+adjust to taste — but they give a working, balanced configuration without trial and
+error. (The firmware does not ship with these as defaults, so there's no flashing
+surprise; apply them in the portal and save.)
+
+**Auto-Haptics**
+| Setting | Value |
+|---|---|
+| Mode | Off (switch to Mix or Replace per game) |
+| Intensity (%) | 80 |
+| Smoothness | 40 |
+| Noise Gate | 20 |
+| LP Cutoff (Hz) | 100 |
+| Filter Slope | 12 dB/oct |
+| Auto-mute Speaker (Replace) | Yes |
+| Auto-mute Speaker (Mix) | Yes |
+| Lightbar Off in Replace Mode | Yes |
+| Converted Rumble Strength (Mix) | 50 |
+| Effect Leak Volume (0=off) | 0 (raise to enable) |
+| Effect Leak Sensitivity | 50 |
+| Effect Leak Decay/Fade-out | 80 |
+| Effect Leak Attack/Responsiveness | 50 |
+| Effect Leak Output High-pass (Hz) | 1000 |
+| Effect Leak Detection Band (Hz) | 2500 |
+
+**Haptics & Audio**
+| Setting | Value |
+|---|---|
+| Native Haptics Gain | 1.00 |
+| Speaker Volume | 100 |
+| Headset Volume | 100 |
+| Speaker Gain | 2 |
+| Sync Speaker & Headset Volume | Yes |
+| Lock Volume | No |
+| Disable Mic | No |
+| Disable Speaker | No |
+
+**Device & Connection**
+| Setting | Value |
+|---|---|
+| Polling Rate | Real-time |
+| Audio Buffer Length | 16 |
+| Inactive Time (min) | 12 |
+| Disable Inactive Disconnect | No |
+| Disable Pico LED | No |
+| Wake PC on PS Button (mouse) | Yes |
+
+**Advanced — BT Latency (experimental)**
+| Setting | Value |
+|---|---|
+| BT Flush Timeout | Off (reliable) |
+| BT QoS Latency | Off |
+
+Notes on the suggested values:
+- **Mode is set per game.** Leave it Off for games with good native DualSense
+  haptics (full fidelity). Use **Replace** for games with no native haptics, or
+  **Mix** for non-native games where you also want converted controller rumble.
+- **Effect Leak Volume starts at 0 (off).** Raise it (e.g. 20–30) to enable the
+  effect leak. With it on, **Audio Buffer Length 16** keeps latency low; the
+  transient-detection leak no longer requires a deep buffer.
+- **Detection Band 2500 Hz + Output High-pass 1000 Hz** make the leak selective to
+  sharp effects and protect the small controller speaker from low-frequency popping.
+- **Decay 80** gives effects a gradual, natural fade-out rather than an abrupt cut.
+
+---
+
+## Configuration reference
 
 The portal is organized into four sections.
 
@@ -70,8 +148,12 @@ The portal is organized into four sections.
 | Auto-mute Speaker (Mix) | on/off | off | Mute controller speaker in Mix mode |
 | Lightbar Off in Replace Mode | on/off | off | Kills the lightbar glow in Replace (e.g. blue in Xbox360 mode) |
 | Converted Rumble Strength (Mix) | 0–100 | 50 | Strength of blended DS4Windows rumble in Mix mode |
-| Effect Leak Volume | 0–100 | 0 (off) | Volume of the high-passed speaker effect leak when auto-muted |
-| Effect Leak High-pass (Hz) | 100–5000 | 800 | Higher = only sharper transients leak through |
+| Effect Leak Volume | 0–100 | 0 (off) | Volume of the transient effect leak through the speaker when auto-muted |
+| Effect Leak Sensitivity | 0–100 | 50 | How sudden a level jump counts as an effect (higher = more leaks through) |
+| Effect Leak Decay/Fade-out | 0–100 | 40 | How gradually effects fade after triggering (~50 ms .. 500 ms) |
+| Effect Leak Attack/Responsiveness | 0–100 | 50 | How fast the gate opens (higher = more immediate, less delay) |
+| Effect Leak Output High-pass (Hz) | 50–2000 | 200 | Removes deep bass from the speaker output to stop popping |
+| Effect Leak Detection Band (Hz) | 100–5000 | 800 | Frequency band the transient detector listens to |
 
 ### Haptics & Audio
 | Setting | Range | Default | Notes |
@@ -79,8 +161,8 @@ The portal is organized into four sections.
 | Native Haptics Gain | 1.0–2.0 | 1.0 | Multiplier on native haptic channels |
 | Speaker Volume | 0–127 | 100 | Controller speaker volume (also scales haptic strength) |
 | Headset Volume | 0–127 | 100 | Headset jack volume |
-| Speaker Gain | 0–7 | — | Controller speaker gain stage |
-| Sync Speaker & Headset Volume | on/off | off | Tie the two volumes together |
+| Speaker Gain | 0–7 | 2 | Controller speaker gain stage |
+| Sync Speaker & Headset Volume | on/off | on | Tie the two volumes together |
 | Lock Volume | on/off | off | Ignore in-game volume changes |
 | Disable Mic | on/off | off | Disable the controller microphone |
 | Disable Speaker | on/off | off | Disable the controller speaker |
@@ -89,10 +171,11 @@ The portal is organized into four sections.
 | Setting | Range | Default | Notes |
 |---|---|---|---|
 | Polling Rate | 250 / 500 / Real-time | Real-time | USB report rate |
-| Audio Buffer Length | 16–128 | 64 | Lower = snappier haptics; higher = more stable audio (the effect leak needs ~64) |
-| Inactive Time (min) | 5–60 | 12 | Idle timeout before disconnect |
+| Audio Buffer Length | 16–128 | 64 | Lower = snappier haptics/lower latency; higher = more audio stability |
+| Inactive Time (min) | 5–60 | 30 | Idle timeout before disconnect |
 | Disable Inactive Disconnect | on/off | off | Never auto-disconnect when idle |
 | Disable Pico LED | on/off | off | Turn off the Pico's onboard LED |
+| Wake PC on PS Button (mouse) | on/off | off | Assert USB remote wakeup on PS press to wake the host |
 
 ### Advanced — BT Latency (experimental)
 | Setting | Default | Notes |
@@ -126,20 +209,26 @@ the haptics. Under DS4Windows, the firmware keeps the controller in actuator mod
 (rather than letting rumble reports force it into motor mode) so the derived
 haptics keep playing.
 
+The **effect leak** uses transient detection: it tracks fast and slow envelopes of
+the high-frequency content and opens the speaker only when the level jumps sharply
+(an onset), so discrete impacts pass while sustained sound stays muted. The output
+is high-passed to protect the small speaker from low-frequency popping.
+
 ---
 
 ## Notes & known behavior
 
 - **Saving / PlayStation app:** Settings are written to flash and applied
-  immediately (the portal triggers a reconnect on save so even enumeration-time
-  settings take effect). However, if you have the PlayStation accessory app open,
-  after saving you may need to **wait 2–3 seconds** before reopening the setting to
-  see the updated value, or simply **open it a second time** — the display lags
+  immediately. Most settings apply live with no reconnect; only a few that require
+  USB re-enumeration (polling rate, audio buffer, mic/speaker enable, wake) trigger
+  a brief reconnect on save. If you have the PlayStation accessory app open, after
+  saving you may need to **wait 2–3 seconds** before reopening the setting to see
+  the updated value, or simply **open it a second time** — the display lags
   slightly, but the settings are saved correctly.
-- **Effect leak needs a deeper buffer.** Because the leak feeds real audio through
-  the speaker path, it requires **Audio Buffer Length 64** to avoid dropouts. At
-  lower buffer values (e.g. 16) the leak will stutter. Buffer 16 is snappier for
-  haptics-only use; raise it to 64 when using the effect leak.
+- **Effect leak latency.** The effect leak goes through the controller's speaker
+  audio pipeline (Opus codec over Bluetooth), which has inherent latency. Transient
+  effects expose this more than continuous audio would. It is reduced as much as
+  the codec allows but is not zero.
 - **Bluetooth vs USB latency.** Native haptics over Bluetooth are slightly less
   tight than over USB — this is inherent to the BT transport (slot scheduling vs
   USB's fixed microframes) and is not tunable away in firmware. A strong link
@@ -149,6 +238,10 @@ haptics keep playing.
 - **Always nuke after a structure change.** When updating to a firmware build with
   changed settings, flash `flash_nuke.uf2` first, then this firmware, to avoid
   stale/garbage settings.
+- **Wake from sleep** depends on the host's sleep state. USB device remote-wakeup
+  works from traditional S3 sleep; behavior under Modern Standby (S0 Low Power Idle)
+  varies by system, and the device's "Allow this device to wake the computer"
+  setting must be enabled in Windows Device Manager.
 
 ---
 
@@ -173,12 +266,13 @@ The resulting `ds5-bridge.uf2` is the firmware.
 
 ### Modified files
 - `src/audio.cpp` — auto-haptics DSP (channel detection, filter cascade, envelope,
-  noise gate, carrier modulation, converted-rumble blend, effect leak, speaker mute)
+  noise gate, carrier modulation, converted-rumble blend, transient effect leak,
+  speaker mute)
 - `src/state_mgr.cpp` — DS4Windows rumble-mode fix, rumble value capture,
   lightbar-off-in-Replace, `state_set` in RAM
-- `src/bt.cpp` — BT flush timeout / QoS controls
+- `src/bt.cpp` — BT flush timeout / QoS controls, RSSI signal strength readout
 - `src/config.h` / `src/config.cpp` — config fields, validation, defaults
-- `src/cmd.cpp` — config field-ID read/write handlers, reboot-to-bootloader
+- `src/cmd.cpp` — config field-ID read/write handlers, diagnostics, reboot-to-bootloader
 
 ---
 
@@ -199,7 +293,7 @@ exist without it — thank you.
 
 Thanks also to the broader DS5Dongle contributors and to awalol for the complete
 RAM relocation in v0.7.0 that keeps native haptics and controller audio working
-without overclocking.
+without overclocking, and for the wake-on-PS-button implementation.
 
 Licensed under the **MIT License** — see [LICENSE](LICENSE). The original awalol
 copyright notice is preserved as required.
@@ -208,7 +302,7 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5dongle-autohaptics-v1.0.0.uf2` — the firmware (flash this)
+- `ds5dongle-autohaptics-v1.0.1.uf2` — the firmware (flash this)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `src/` — the modified source files
 - `ds5dongle-autohaptics.patch` — unified diff against awalol v0.7.0

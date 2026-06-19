@@ -46,7 +46,7 @@
      if (frames == 0) {
          return;
      }
-@@ -139,10 +161,84 @@
+@@ -139,10 +161,135 @@
  
      // const float audio_gain = mute[0] ? 0.0f : powf(10.0f, get_config().speaker_volume / 20.0f);
      const float haptics_gain = get_config().haptics_gain;
@@ -99,31 +99,82 @@
 +    // dB/oct value (6/12/24); map to pole count.
 +    const uint8_t slope_db = get_config().auto_haptics_slope;
 +    const int n_poles = (slope_db >= 24) ? 4 : (slope_db >= 12) ? 2 : 1;
-+    // Effect leak: when auto-mute would fully silence the speaker, optionally let
-+    // a high-passed, low-volume version through. High-pass keeps sharp transient
-+    // effects (shots, clinks, mechanical impacts) and rejects the low-mid drone of
-+    // dialog/music, so you get a subtle "detail layer" like native DualSense games
-+    // — without the full soundtrack. leak_vol 0 = fully muted (off).
++    // Effect leak (transient detection): when auto-mute would fully silence the
++    // speaker, only open it briefly during sharp ONSETS — sudden level jumps like
++    // impacts, shots, clinks — and keep it closed for sustained sound (dialog,
++    // music, ambience). A plain high-pass leaks all sustained high-frequency
++    // content (hiss, music treble); transient detection instead reacts to how
++    // FAST the level rises, so only percussive effects pass. leak_vol 0 = off.
 +    const float leak_vol = get_config().effect_leak_volume / 100.0f;
 +    const bool leak_active = (mute_for_mode && !mute[0] && leak_vol > 0.0f);
-+    // High-pass cutoff for the leak (separate from haptic LP). Higher = only the
-+    // sharpest transients pass. ~800 Hz keeps effects, drops voice fundamentals.
-+    static float hp_l = 0.0f, hp_r = 0.0f; // high-pass state (1-pole, via LP subtraction)
++    // Detection runs on a high-passed copy so low-frequency dialog onsets don't
++    // trigger it. The configured "high-pass" value doubles as the detection band.
++    static float hp_l = 0.0f, hp_r = 0.0f;          // high-pass state (for detection input)
++    static float ohp_l = 0.0f, ohp_r = 0.0f;        // output high-pass state (speaker protection)
++    // Output high-pass: the controller speaker is a tiny driver that can't
++    // reproduce deep bass — feeding it low frequencies makes the cone hit its
++    // excursion limit and POP/distort. Strip the lows from the OUTPUT (separate
++    // from the detection high-pass) so the speaker only gets what it can play.
++    // Configurable cutoff; ~150-300 Hz is typically enough to stop popping.
++    const float ohp_fc = (float)get_config().effect_leak_output_hp_hz;
++    const float ohp_a = 1.0f - expf(-2.0f * (float)M_PI * ohp_fc / 48000.0f);
++    static float env_fast = 0.0f, env_slow = 0.0f;  // fast/slow level envelopes
++    static float leak_gain = 0.0f;                   // smoothed open/close gain
 +    const float hp_fc = (float)get_config().effect_leak_hp_hz;
 +    const float hp_a = 1.0f - expf(-2.0f * (float)M_PI * hp_fc / 48000.0f);
++    // Sensitivity: how much the fast envelope must exceed the slow one to count as
++    // a transient. Higher sensitivity (config 0-100) -> lower ratio -> opens more
++    // easily (more sound leaks). Maps 0->ratio 3.0 (very selective, only big hits)
++    // .. 100->ratio 1.2 (eager, most onsets pass). Default ~50 -> ~2.1.
++    const uint8_t sens_cfg = get_config().effect_leak_sensitivity > 100 ? 50 : get_config().effect_leak_sensitivity;
++    const float TRANS_RATIO = 3.0f - (sens_cfg / 100.0f) * 1.8f;
++    const float ENV_FAST_A  = 0.65f;  // fast envelope attack — quicker detection (less delay)
++    const float ENV_SLOW_A  = 0.0020f;// slow envelope (~tracks the ongoing level)
++    // Gate ramps: opening too fast creates a click at the onset (crackle); a few
++    // ms ramp removes the click while staying responsive. Close SLOWLY so the hit
++    // rings out and fades gradually instead of stopping abruptly. The close rate
++    // (decay/fade-out length) is configurable: higher decay -> smaller coefficient
++    // -> longer, more gradual tail. 0 -> ~0.004 (quick), 100 -> ~0.0004 (very long).
++    const uint8_t decay_cfg = get_config().effect_leak_decay > 100 ? 40 : get_config().effect_leak_decay;
++    // Attack (responsiveness): how fast the gate opens once a transient is
++    // detected. Faster = more immediate hit (less perceived delay) but can add a
++    // faint click on the sharpest onsets; slower = smoother but feels delayed.
++    // Configurable 0-100: 0 -> 0.03 (smooth), 100 -> 0.40 (near-instant).
++    const uint8_t atk_cfg = get_config().effect_leak_attack > 100 ? 50 : get_config().effect_leak_attack;
++    const float GATE_OPEN   = 0.03f + (atk_cfg / 100.0f) * 0.37f;
++    const float GATE_CLOSE  = 0.004f - (decay_cfg / 100.0f) * 0.0036f; // 0.004 .. 0.0004
      for (int i = 0; i < nframes; i++) {
   #if !DISABLE_SPEAKER_PROC       
 -        audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS] / 32768.0f;
 -        audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS + 1] / 32768.0f;
 +        float spk_l_out, spk_r_out;
 +        if (leak_active) {
-+            // High-pass = signal - low-pass. Keeps transients/highs, drops lows.
 +            const float in_l = raw[i * actual_ch]     / 32768.0f;
 +            const float in_r = raw[i * actual_ch + 1] / 32768.0f;
++            // High-pass (signal - low-pass) — used ONLY for transient DETECTION,
++            // not for output. Outputting the thin treble-only signal is what
++            // caused the crackle; we detect on highs but play the full sound.
 +            hp_l += hp_a * (in_l - hp_l);
 +            hp_r += hp_a * (in_r - hp_r);
-+            spk_l_out = (in_l - hp_l) * leak_vol;
-+            spk_r_out = (in_r - hp_r) * leak_vol;
++            const float hpf_l = in_l - hp_l;
++            const float hpf_r = in_r - hp_r;
++            const float mag = 0.5f * ((hpf_l<0?-hpf_l:hpf_l) + (hpf_r<0?-hpf_r:hpf_r));
++            // Fast envelope reacts to onsets; slow envelope tracks the baseline.
++            env_fast += ((mag > env_fast) ? ENV_FAST_A : ENV_FAST_A*0.25f) * (mag - env_fast);
++            env_slow += ENV_SLOW_A * (mag - env_slow);
++            // Transient when the fast envelope jumps well above the slow baseline.
++            const bool transient = (env_fast > env_slow * TRANS_RATIO + 0.0008f);
++            const float target = transient ? 1.0f : 0.0f;
++            leak_gain += ((target > leak_gain) ? GATE_OPEN : GATE_CLOSE) * (target - leak_gain);
++            // Output the FULL-BAND audio, smoothly gated by the transient detector,
++            // but first high-pass it to remove the deep bass that pops the speaker.
++            // (Detection used the full content; output is protected.)
++            ohp_l += ohp_a * (in_l - ohp_l);
++            ohp_r += ohp_a * (in_r - ohp_r);
++            const float out_l = in_l - ohp_l; // high-passed (lows removed)
++            const float out_r = in_r - ohp_r;
++            spk_l_out = out_l * leak_gain * leak_vol;
++            spk_r_out = out_r * leak_gain * leak_vol;
 +        } else {
 +            spk_l_out = raw[i * actual_ch]     / 32768.0f * spk_gain;
 +            spk_r_out = raw[i * actual_ch + 1] / 32768.0f * spk_gain;
@@ -133,7 +184,7 @@
          if (audio_buf_pos == 512 * 2) {
              static audio_raw_element element{};
              memcpy(element.data, audio_buf, 512 * 2 * 4);
-@@ -155,10 +251,101 @@
+@@ -155,10 +302,101 @@
              audio_buf_pos = 0;
          }
  #endif
@@ -239,6 +290,15 @@
      }
  
      // 3. 48kHz -> 3kHz 重采样
+@@ -236,7 +474,7 @@
+     queue_init(&mic_fifo, sizeof(mic_element), 2);
+     queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
+ #if !DISABLE_SPEAKER_PROC
+-    queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
++    queue_init(&audio_fifo, sizeof(audio_raw_element), 1);
+     critical_section_init(&opus_cs);
+     multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
+ #endif
 --- a/src/bt.cpp
 +++ b/src/bt.cpp
 @@ -704,6 +704,35 @@
@@ -279,7 +339,7 @@
                      bt_blacklist_remove(current_device_addr);
 --- a/src/cmd.cpp
 +++ b/src/cmd.cpp
-@@ -146,6 +146,20 @@
+@@ -146,6 +146,24 @@
              new_config.enable_wake = value;
              break;
          }
@@ -297,10 +357,14 @@
 +        case 0x1d: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.rumble_haptic_strength=v; break; }
 +        case 0x1e: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_volume=v; break; }
 +        case 0x1f: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_hp_hz=v; break; }
++        case 0x23: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_sensitivity=v; break; }
++        case 0x24: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_decay=v; break; }
++        case 0x25: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_attack=v; break; }
++        case 0x26: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_output_hp_hz=v; break; }
          default:
              printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
              return false;
-@@ -195,6 +209,23 @@
+@@ -195,6 +213,27 @@
              return write_config_value(buffer, bufsize, config.disable_speaker);
          case 0x11:
              return write_config_value(buffer, bufsize, config.enable_wake);
@@ -318,13 +382,17 @@
 +        case 0x1d: return write_config_value(buffer, bufsize, config.rumble_haptic_strength);
 +        case 0x1e: return write_config_value(buffer, bufsize, config.effect_leak_volume);
 +        case 0x1f: return write_config_value(buffer, bufsize, config.effect_leak_hp_hz);
++        case 0x23: return write_config_value(buffer, bufsize, config.effect_leak_sensitivity);
++        case 0x24: return write_config_value(buffer, bufsize, config.effect_leak_decay);
++        case 0x25: return write_config_value(buffer, bufsize, config.effect_leak_attack);
++        case 0x26: return write_config_value(buffer, bufsize, config.effect_leak_output_hp_hz);
 +        case 0x20: { extern volatile uint16_t g_diag_bytes_read; return write_config_value(buffer, bufsize, (uint16_t)g_diag_bytes_read); }
 +        case 0x21: { extern volatile uint8_t g_diag_actual_ch; return write_config_value(buffer, bufsize, (uint8_t)g_diag_actual_ch); }
 +        case 0x22: { int8_t rssi = 0; bt_get_signal_strength(&rssi); return write_config_value(buffer, bufsize, (uint8_t)rssi); }
          default:
              printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
              return false;
-@@ -289,13 +320,15 @@
+@@ -289,13 +328,15 @@
              feature_data[0x81].assign(buf, buf + sizeof(buf));
              break;
          }
@@ -344,7 +412,7 @@
  }
 --- a/src/config.cpp
 +++ b/src/config.cpp
-@@ -113,6 +113,20 @@
+@@ -113,6 +113,24 @@
          body->disable_speaker = 0;
          printf("[Config] disable_speaker is invalid\n");
      }
@@ -362,12 +430,16 @@
 +    if (body->rumble_haptic_strength > 100) body->rumble_haptic_strength = 50;
 +    if (body->effect_leak_volume > 100) body->effect_leak_volume = 0; // 0=off
 +    if (body->effect_leak_hp_hz < 100 || body->effect_leak_hp_hz > 5000) body->effect_leak_hp_hz = 800;
++    if (body->effect_leak_sensitivity > 100) body->effect_leak_sensitivity = 50;
++    if (body->effect_leak_decay > 100) body->effect_leak_decay = 40;
++    if (body->effect_leak_attack > 100) body->effect_leak_attack = 50;
++    if (body->effect_leak_output_hp_hz < 50 || body->effect_leak_output_hp_hz > 2000) body->effect_leak_output_hp_hz = 200;
      if (body->enable_wake > 1) {
          body->enable_wake = 0;
          printf("[Config] enable_wake is invalid\n");
 --- a/src/config.h
 +++ b/src/config.h
-@@ -26,6 +26,20 @@
+@@ -26,6 +26,24 @@
      uint8_t disable_mic; // bool: 0 enable (default), 1 disable controller mic
      uint8_t disable_speaker; // bool: 0 enable (default), 1 disable speaker/headset
      uint8_t enable_wake; // bool: 0 disabled (default), 1 wake host on PS press (USB remote wakeup)
@@ -384,7 +456,11 @@
 +    uint16_t bt_qos_latency_us; // QoS requested link latency in microseconds; 0=off
 +    uint8_t rumble_haptic_strength; // [0-100] strength of converted DS4Windows rumble blended in Mix mode
 +    uint8_t effect_leak_volume; // [0-100] volume of high-passed effect leak through speaker when auto-muted; 0=off
-+    uint16_t effect_leak_hp_hz; // high-pass cutoff (Hz) for the effect leak
++    uint16_t effect_leak_hp_hz; // high-pass cutoff (Hz) for the effect leak detection band
++    uint8_t effect_leak_sensitivity; // [0-100] transient detection sensitivity; higher=more eager (more leaks through)
++    uint8_t effect_leak_decay; // [0-100] fade-out length after a transient; higher=longer/more gradual tail
++    uint8_t effect_leak_attack; // [0-100] gate open speed; higher=more immediate (less delay)
++    uint16_t effect_leak_output_hp_hz; // output high-pass cutoff (Hz) — protects speaker from low-freq popping
  };
  
  struct __attribute__((packed)) Config {

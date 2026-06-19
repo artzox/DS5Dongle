@@ -56,7 +56,11 @@ const SECTIONS = [
     [0x19,'lightbar_off','u8','Lightbar Off in Replace Mode','bool'],
     [0x1d,'rumble_haptic_strength','u8','Converted Rumble Strength (Mix)','number',[0,100]],
     [0x1e,'effect_leak_volume','u8','Effect Leak Volume (0=off)','number',[0,100]],
-    [0x1f,'effect_leak_hp_hz','u16','Effect Leak High-pass (Hz)','number',[100,5000]],
+    [0x23,'effect_leak_sensitivity','u8','Effect Leak Sensitivity','number',[0,100]],
+    [0x24,'effect_leak_decay','u8','Effect Leak Decay/Fade-out','number',[0,100]],
+    [0x25,'effect_leak_attack','u8','Effect Leak Attack/Responsiveness','number',[0,100]],
+    [0x26,'effect_leak_output_hp_hz','u16','Effect Leak Output High-pass (Hz)','number',[50,2000]],
+    [0x1f,'effect_leak_hp_hz','u16','Effect Leak Detection Band (Hz)','number',[100,5000]],
   ]},
   { title: 'Haptics & Audio', fields: [
     [0x01,'haptics_gain','f32','Native Haptics Gain','number',[1.0,2.0]],
@@ -74,6 +78,7 @@ const SECTIONS = [
     [0x06,'inactive_time','u8','Inactive Time (min)','number',[5,60]],
     [0x07,'disable_inactive_disconnect','u8','Disable Inactive Disconnect','bool'],
     [0x08,'disable_pico_led','u8','Disable Pico LED','bool'],
+    [0x11,'enable_wake','u8','Wake PC on PS Button (mouse)','bool'],
   ]},
   { title: 'Advanced — BT Latency (experimental)', fields: [
     [0x1b,'bt_flush_timeout','u16','BT Flush Timeout (0=off)','select',{0:'Off (reliable)',4:'~2.5ms (low latency)',6:'~3.75ms',10:'~6.25ms',16:'~10ms'}],
@@ -84,6 +89,8 @@ const SECTIONS = [
 const FIELDS = SECTIONS.flatMap(s => s.fields);
 
 let device = null;
+let saving = false; // suspends background diagnostic polling during save/reconnect
+let savedSnapshot = {}; // last-saved config, to detect which fields changed on save
 let config = {};
 
 function toast(msg, err=false){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2200); }
@@ -96,6 +103,7 @@ async function connect(){
     device=devices[0];
     if(!device.opened) await device.open();
     await readAll();
+    savedSnapshot = {...config}; // baseline for change detection on save
     render();
   }catch(e){ toast('Connect failed: '+e.message,true); }
 }
@@ -188,42 +196,84 @@ async function rebootBootloader(){
   toast('Rebooting to bootloader — look for RPI-RP2 drive');
 }
 
-async function ensureDevice(){
-  // Make sure we have a live, open device handle. After a reconnect cycle the
-  // previous handle can go stale; re-acquire from getDevices() if needed.
-  if (device && device.opened) return true;
-  try {
-    const devs = await navigator.hid.getDevices();
-    const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
-    if (d){
-      device = d;
-      if (!device.opened) await device.open();
-      return true;
-    }
-  } catch(e){ /* fall through */ }
+async function reacquire(){
+  // Force a fresh device handle from getDevices(). After a reconnect cycle the
+  // previous object can report opened while its connection is dead, so writes
+  // silently fail; re-acquiring a fresh handle is the reliable recovery.
+  try { if (device && device.opened) await device.close(); } catch(e){}
+  device = null;
+  for (let i = 0; i < 10; i++){
+    try {
+      const devs = await navigator.hid.getDevices();
+      const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+      if (d){
+        device = d;
+        if (!device.opened) await device.open();
+        return true;
+      }
+    } catch(e){}
+    await new Promise(r => setTimeout(r, 250));
+  }
   return false;
+}
+
+async function ensureDevice(){
+  if (device && device.opened) return true;
+  return await reacquire();
+}
+
+// Write a field; if the handle is stale (write throws), re-acquire once and retry.
+async function writeFieldSafe(fid, type, value){
+  try {
+    await writeField(fid, type, value);
+  } catch(e){
+    if (await reacquire()) {
+      await writeField(fid, type, value); // retry on the fresh handle
+    } else {
+      throw e;
+    }
+  }
 }
 
 async function saveAll(){
   try{
+    saving = true; // pause background diagnostic polling so it can't collide
+                   // with the save's reads/writes or the close/reopen cycle
     if (!(await ensureDevice())){ toast('No device — click Connect', true); return; }
+    // Use writeFieldSafe so a stale handle (after a prior reconnect) is detected
+    // on the first write and recovered, instead of silently failing.
     for (const [fid,key,type] of FIELDS){
-      await writeField(fid, type, config[key] ?? 0);
+      await writeFieldSafe(fid, type, config[key] ?? 0);
     }
-    await sendCmd(0x02); // save to flash
-    toast('Saved — reconnecting…');
+    try { await sendCmd(0x02); } catch(e){ if(await reacquire()) await sendCmd(0x02); } // save to flash
 
-    // Some fields (polling rate, audio buffer, mic/speaker enable) only apply at
-    // USB enumeration, so reconnect the device. Auto-haptics/mute/lightbar fields
-    // apply live and are already in effect. After the reconnect, re-acquire the
-    // device and re-read so the UI reflects what's actually stored.
+    // Only a few fields require a USB re-enumeration to take effect (polling rate,
+    // audio buffer length, mic/speaker enable). Everything else (auto-haptics,
+    // effect leak, mute, lightbar, volumes) applies live on save. So only trigger
+    // a reconnect when one of those enumeration-time fields actually changed —
+    // this avoids an unnecessary disconnect/reconnect on every save.
+    const ENUM_FIELDS = ['polling_rate_mode','audio_buffer_length','disable_mic','disable_speaker','enable_wake'];
+    let needReconnect = false;
+    for (const k of ENUM_FIELDS){
+      if (savedSnapshot[k] !== config[k]) { needReconnect = true; break; }
+    }
+
+    if (!needReconnect){
+      // No enumeration-time change — settings are already applied live. Just
+      // confirm and refresh the snapshot. No reconnect, no handle churn.
+      savedSnapshot = {...config};
+      toast('Saved');
+      return;
+    }
+
+    toast('Saved — reconnecting…');
+    // A single reconnect: the firmware's 0x03 re-enumerates the USB device. We do
+    // NOT separately close/open the WebHID handle (that would cause a SECOND
+    // visible reconnect); instead we let the firmware reconnect, then re-acquire
+    // the handle that the OS presents after re-enumeration.
     await new Promise(r => setTimeout(r, 300)); // let flash write finish
     try { await sendCmd(0x03); } catch(e){ /* device drops here, expected */ }
-
-    // Close the old handle so we don't keep a stale reference, then wait for
-    // re-enumeration and re-acquire a FRESH device object.
-    try { if (device && device.opened) await device.close(); } catch(e){}
-    device = null;
+    device = null; // drop our reference; the re-enumerated device is a new handle
     for (let attempt = 0; attempt < 12; attempt++){
       await new Promise(r => setTimeout(r, 500));
       try {
@@ -232,25 +282,24 @@ async function saveAll(){
         if (d){
           device = d;
           if (!device.opened) await device.open();
-          // Give the freshly re-enumerated HID interface a moment to be ready to
-          // answer feature reports before reading.
           await new Promise(r => setTimeout(r, 350));
           await readAll();
+          savedSnapshot = {...config};
           render();
           toast('Reconnected — settings refreshed');
           return;
         }
       } catch(e){ /* keep trying */ }
     }
-    // Reconnect didn't re-acquire automatically — prompt a manual reconnect.
     render();
     toast('Saved. Click Connect to reconnect.', true);
   }catch(e){ toast('Save failed: '+e.message,true); }
+  finally { saving = false; } // always resume background polling
 }
 
 
 async function readDiag(){
-  if(!device || !device.opened) return {br:'-', ch:'-', rssi:null};
+  if(saving || !device || !device.opened) return {br:'-', ch:'-', rssi:null};
   try {
     const br = await readField(0x20, 'u16');
     const ch = await readField(0x21, 'u8');
@@ -279,7 +328,7 @@ async function refreshDiag(){
   const el = document.getElementById('diagbox');
   if(el) el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}`;
 }
-setInterval(()=>{ if(document.getElementById('diagbox')) refreshDiag(); }, 1000);
+setInterval(()=>{ if(!saving && device && device.opened && document.getElementById('diagbox')) refreshDiag(); }, 1000);
 
 function render(){
   const app=document.getElementById('app');
