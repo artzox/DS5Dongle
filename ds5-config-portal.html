@@ -78,7 +78,7 @@ const SECTIONS = [
     [0x06,'inactive_time','u8','Inactive Time (min)','number',[5,60]],
     [0x07,'disable_inactive_disconnect','u8','Disable Inactive Disconnect','bool'],
     [0x08,'disable_pico_led','u8','Disable Pico LED','bool'],
-    [0x11,'enable_wake','u8','Wake PC on PS Button (mouse)','bool'],
+    [0x11,'enable_wake','u8','Wake PC on PS Button','bool'],
   ]},
   { title: 'Advanced — BT Latency (experimental)', fields: [
     [0x1b,'bt_flush_timeout','u16','BT Flush Timeout (0=off)','select',{0:'Off (reliable)',4:'~2.5ms (low latency)',6:'~3.75ms',10:'~6.25ms',16:'~10ms'}],

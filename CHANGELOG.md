@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.1-hotfix] — 2026-06-19
+
+Hotfix over 1.0.1 addressing a wake-related connection bug.
+
+### Fixed
+- **Stuck connection with wake enabled.** With the wake feature on, the USB device
+  stays on the bus after the controller powers off (so a later button press can
+  wake the host). On reconnection this left the controller stuck — connected but
+  non-functional, with a steady (yellow) LED — until the dongle was physically
+  replugged, because the bare `tud_connect()` was a no-op while the device was
+  still enumerated. The firmware now forces a clean USB re-enumeration
+  (`tud_disconnect()` → settle → `tud_connect()`) on reconnect when wake is
+  enabled, so the connection completes normally.
+
+### Known limitations
+- With wake enabled, the device may remain listed in DS4Windows after the
+  controller disconnects (the persistent USB presence wake requires). Turn wake off
+  for clean disconnect behavior in DS4Windows.
+- Reconnection may occasionally take slightly longer with wake enabled, as a result
+  of the clean re-enumeration.
+
+### Note
+- The "Wake PC on PS Button" toggle is labeled without a device-type qualifier; the
+  feature asserts USB remote wakeup on a button press to wake the host.
+
 ## [1.0.1] — 2026-06-19
 
 First public release. Built on awalol/DS5Dongle v0.7.0. Refines the initial 1.0.0
@@ -88,5 +113,6 @@ Initial internal build. Built on awalol/DS5Dongle v0.7.0.
 - The firmware ships with stock defaults; see the README "Suggested setup" for a
   tuned auto-haptics + effect-leak configuration to apply in the portal.
 
+[1.0.1-hotfix]: https://github.com/awalol/DS5Dongle
 [1.0.1]: https://github.com/awalol/DS5Dongle
 [1.0.0]: https://github.com/awalol/DS5Dongle
