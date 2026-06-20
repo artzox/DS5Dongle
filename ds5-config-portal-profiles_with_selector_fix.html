@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DS5 Bridge Config (POC)</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --border:#2a2f3a; --text:#e6e8ec; --sub:#9aa0aa; --accent:#4ea1ff; --green:#3fb950; --red:#f85149; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); padding:24px; }
+  .wrap { max-width:640px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .subtitle { color:var(--sub); font-size:13px; margin:0 0 20px; }
+  .status-bar { display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 16px; margin-bottom:16px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--red); flex-shrink:0; }
+  .dot.on { background:var(--green); }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card-title { font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--sub); margin-bottom:12px; }
+  .row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border); }
+  .row:last-child { border-bottom:none; }
+  .row .label { font-size:15px; }
+  .row .hint { font-size:12px; color:var(--sub); margin-top:2px; }
+  input[type=number], select { background:#11141a; border:1px solid var(--border); color:var(--text); border-radius:8px; padding:8px 10px; font-size:14px; width:150px; text-align:right; }
+  select { text-align:left; }
+  .btn { border:none; border-radius:8px; padding:9px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-green { background:var(--green); color:#fff; }
+  .btn-outline { background:transparent; border:1px solid var(--border); color:var(--text); }
+  .actions { display:flex; gap:10px; margin-top:8px; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(100px); background:var(--card); border:1px solid var(--border); padding:12px 20px; border-radius:8px; transition:transform .3s; }
+  .toast.show { transform:translateX(-50%) translateY(0); }
+  .toast.err { border-color:var(--red); }
+  .info-text { color:var(--sub); font-size:14px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<div class="toast" id="toast"></div>
+<script>
+const SONY_VID = 0x054C, DS5_PID = 0x0CE6, DSE_PID = 0x0DF2;
+const SET_REPORT = 0x80, GET_REPORT = 0x81;
+
+// Field definitions: [field_id, key, type('u8'|'u16'|'f32'), label, kind, opts]
+// Fields grouped into sections. Each field: [id, key, type, label, kind, opts]
+// kind: 'number' | 'select' | 'bool' ; type: 'u8' | 'u16' | 'f32'
+const SECTIONS = [
+  { title: 'Auto-Haptics', fields: [
+    [0x12,'auto_haptics_enable','u8','Mode','select',{0:'Off',1:'Mix with native',2:'Replace (audio only)'}],
+    [0x13,'auto_haptics_gain','u8','Intensity (%)','number',[0,200]],
+    [0x1a,'auto_haptics_smooth','u8','Smoothness','number',[0,100]],
+    [0x17,'auto_haptics_gate','u8','Noise Gate','number',[0,100]],
+    [0x14,'auto_haptics_lowpass_hz','u16','LP Cutoff (Hz)','number',[30,200]],
+    [0x18,'auto_haptics_slope','u8','Filter Slope','select',{6:'6 dB/oct (gentle)',12:'12 dB/oct (default)',24:'24 dB/oct (steep)'}],
+    [0x15,'auto_mute_replace','u8','Auto-mute Speaker (Replace)','bool'],
+    [0x16,'auto_mute_mix','u8','Auto-mute Speaker (Mix)','bool'],
+    [0x19,'lightbar_off','u8','Lightbar Off in Replace Mode','bool'],
+    [0x1d,'rumble_haptic_strength','u8','Converted Rumble Strength (Mix)','number',[0,100]],
+    [0x1e,'effect_leak_volume','u8','Effect Leak Volume (0=off)','number',[0,100]],
+    [0x23,'effect_leak_sensitivity','u8','Effect Leak Sensitivity','number',[0,100]],
+    [0x24,'effect_leak_decay','u8','Effect Leak Decay/Fade-out','number',[0,100]],
+    [0x25,'effect_leak_attack','u8','Effect Leak Attack/Responsiveness','number',[0,100]],
+    [0x26,'effect_leak_output_hp_hz','u16','Effect Leak Output High-pass (Hz)','number',[50,2000]],
+    [0x1f,'effect_leak_hp_hz','u16','Effect Leak Detection Band (Hz)','number',[100,5000]],
+  ]},
+  { title: 'Haptics & Audio', fields: [
+    [0x01,'haptics_gain','f32','Native Haptics Gain','number',[1.0,2.0]],
+    [0x02,'speaker_volume','u8','Speaker Volume','number',[0,127]],
+    [0x03,'headset_volume','u8','Headset Volume','number',[0,127]],
+    [0x05,'speaker_gain','u8','Speaker Gain','number',[0,7]],
+    [0x04,'sync_spk_headset_volume','u8','Sync Speaker & Headset Volume','bool'],
+    [0x0c,'lock_volume','u8','Lock Volume','bool'],
+    [0x0f,'disable_mic','u8','Disable Mic','bool'],
+    [0x10,'disable_speaker','u8','Disable Speaker','bool'],
+  ]},
+  { title: 'Device & Connection', fields: [
+    [0x0b,'controller_mode','u8','Controller Type','select',{0:'DualSense (DS5)',1:'DualSense Edge (DSE)',2:'Auto-detect'}],
+    [0x09,'polling_rate_mode','u8','Polling Rate','select',{0:'250 Hz',1:'500 Hz',2:'Real-time'}],
+    [0x0a,'audio_buffer_length','u8','Audio Buffer Length','number',[16,128]],
+    [0x06,'inactive_time','u8','Inactive Time (min)','number',[5,60]],
+    [0x07,'disable_inactive_disconnect','u8','Disable Inactive Disconnect','bool'],
+    [0x08,'disable_pico_led','u8','Disable Pico LED','bool'],
+    [0x11,'enable_wake','u8','Wake PC on PS Button','bool'],
+  ]},
+  { title: 'Advanced — BT Latency (experimental)', fields: [
+    [0x1b,'bt_flush_timeout','u16','BT Flush Timeout (0=off)','select',{0:'Off (reliable)',4:'~2.5ms (low latency)',6:'~3.75ms',10:'~6.25ms',16:'~10ms'}],
+    [0x1c,'bt_qos_latency_us','u16','BT QoS Latency (0=off)','select',{0:'Off',5000:'5ms (aggressive)',10000:'10ms',15000:'15ms',20000:'20ms (relaxed)'}],
+  ]},
+];
+// Flat list derived from sections (for read/write loops).
+const FIELDS = SECTIONS.flatMap(s => s.fields);
+
+let device = null;
+let saving = false; // suspends background diagnostic polling during save/reconnect
+
+// When the controller is turned off (disconnected), WebHID fires a disconnect
+// event. Without handling it, our cached `device` keeps reporting opened===true
+// even though its connection is dead, so the next save writes to a stale handle
+// and fails (requiring a manual reconnect). Null the handle on disconnect so the
+// next save's ensureDevice() cleanly re-acquires the freshly-reconnected device.
+if (navigator.hid && navigator.hid.addEventListener) {
+  navigator.hid.addEventListener('disconnect', (e) => {
+    if (device && e.device === device) {
+      device = null;
+      if (typeof render === 'function') { try { render(); } catch(_){} }
+    }
+  });
+
+  // When the device returns (controller reconnects, or the USB device re-enumerates
+  // after the PC wakes from sleep), WebHID fires a connect event. Re-acquire the
+  // fresh handle and re-read, so the portal recovers automatically instead of
+  // sitting with a stale/null handle and showing 0 values. This specifically fixes
+  // the "all values 0 after PC wake" case: sleep/resume re-enumerates the device,
+  // and without this the portal never re-grabs it.
+  navigator.hid.addEventListener('connect', async (e) => {
+    try {
+      const d = e.device;
+      if (!d || d.vendorId !== SONY_VID) return;
+      if (d.productId !== DS5_PID && d.productId !== DSE_PID) return;
+      // Only auto-recover if we don't already hold a live handle.
+      if (device && device.opened) return;
+      device = d;
+      if (!device.opened) await device.open();
+      // Give the firmware a moment to (re)populate its feature data after connect,
+      // then re-read so the UI reflects real values rather than 0s.
+      await new Promise(r => setTimeout(r, 400));
+      if (typeof readAll === 'function') { await readAll(); }
+      if (typeof render === 'function') { render(); }
+    } catch (_) { /* leave handle; user can click Connect */ }
+  });
+}
+let savedSnapshot = {}; // last-saved config, to detect which fields changed on save
+let config = {};
+
+function toast(msg, err=false){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2200); }
+
+async function connect(){
+  try{
+    const filters=[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}];
+    const devices=await navigator.hid.requestDevice({filters});
+    if(!devices.length) return;
+    device=devices[0];
+    if(!device.opened) await device.open();
+    await readAll();
+    savedSnapshot = {...config}; // baseline for change detection on save
+    render();
+  }catch(e){ toast('Connect failed: '+e.message,true); }
+}
+
+async function disconnect(){ if(device&&device.opened) await device.close(); device=null; render(); }
+
+// Send a 0x80 command: [0x66, cmd_id, ...args], padded to the full 63-byte
+// feature report size (WebHID requires the exact declared report length).
+async function sendCmd(cmdId, args=[]){
+  const payload = new Uint8Array(63);
+  payload[0] = 0x66;
+  payload[1] = cmdId;
+  args.forEach((b,i) => { payload[2+i] = b; });
+  await device.sendFeatureReport(SET_REPORT, payload);
+}
+
+// Query one field via cmd 0x04, then read 0x81 response.
+// Wire (from 0x66 marker): [0x66, 0x04, field_id, value_bytes...]
+async function readField(fieldId, type){
+  // Retry a few times: verify the response's field_id matches what we asked for,
+  // so a stale/buffered response from a previous query can't land in the wrong
+  // field (this caused e.g. the noise gate showing 233 after the post-save
+  // re-read, when one field's value was read into another's slot).
+  for (let tryN = 0; tryN < 4; tryN++){
+    await sendCmd(0x04, [fieldId]);
+    await new Promise(r => setTimeout(r, 25));
+    const data = await device.receiveFeatureReport(GET_REPORT);
+    const raw = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    let m = -1;
+    for (let k = 0; k < Math.min(4, raw.length); k++){
+      if (raw[k] === 0x66 && raw[k+1] === 0x04){ m = k; break; }
+    }
+    if (m < 0){ await new Promise(r => setTimeout(r, 15)); continue; }
+    const respField = raw[m + 2];
+    if (respField !== fieldId){
+      // Stale response for a different field — wait and retry.
+      await new Promise(r => setTimeout(r, 15));
+      continue;
+    }
+    const base = m + 3; // skip 0x66, 0x04, field_id -> value
+    const dv = new DataView(raw.buffer, raw.byteOffset + base);
+    if (type === 'u8')  return dv.getUint8(0);
+    if (type === 'u16') return dv.getUint16(0, true);
+    if (type === 'f32') return dv.getFloat32(0, true);
+    return 0;
+  }
+  throw new Error('field 0x'+fieldId.toString(16)+' read mismatch after retries');
+}
+
+async function readAll(){
+  const prev = {...config};
+  const fresh = {};
+  let failures = 0;
+  for (const [fid,key,type] of FIELDS){
+    try {
+      fresh[key] = await readField(fid, type);
+    } catch(e){
+      // Keep the previous value rather than zeroing it — a transient read miss
+      // (e.g. right after reconnect) shouldn't wipe the displayed config to 0.
+      fresh[key] = (key in prev) ? prev[key] : 0;
+      failures++;
+    }
+  }
+  // If a lot of reads failed, the device was likely not ready yet — settle and
+  // retry once so the refresh doesn't leave stale/zero values.
+  if (failures > FIELDS.length / 3){
+    await new Promise(r => setTimeout(r, 400));
+    let ok = true;
+    for (const [fid,key,type] of FIELDS){
+      try { fresh[key] = await readField(fid, type); }
+      catch(e){ ok = false; }
+    }
+    if (!ok) toast('Some values could not be read — try Re-read', true);
+  }
+  config = fresh;
+}
+
+async function writeField(fieldId, type, value){
+  let bytes;
+  if (type === 'u8')  bytes = [value & 0xff];
+  else if (type === 'u16'){ bytes = [value & 0xff, (value>>8)&0xff]; }
+  else if (type === 'f32'){ const b=new Uint8Array(new Float32Array([value]).buffer); bytes=[...b]; }
+  await sendCmd(0x01, [fieldId, ...bytes]);
+}
+
+async function rebootBootloader(){
+  if(!device || !device.opened){ toast('Connect first', true); return; }
+  if(!confirm('Reboot the dongle into the bootloader (RPI-RP2 drive) for reflashing?\n\nThe controller disconnects. Drag a .uf2 onto the drive to flash, or replug to cancel.')) return;
+  try { await sendCmd(0x07); } catch(e){ /* device vanishes, expected */ }
+  toast('Rebooting to bootloader — look for RPI-RP2 drive');
+}
+
+async function reacquire(){
+  // Force a fresh device handle from getDevices(). After a reconnect cycle the
+  // previous object can report opened while its connection is dead, so writes
+  // silently fail; re-acquiring a fresh handle is the reliable recovery.
+  try { if (device && device.opened) await device.close(); } catch(e){}
+  device = null;
+  for (let i = 0; i < 10; i++){
+    try {
+      const devs = await navigator.hid.getDevices();
+      const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+      if (d){
+        device = d;
+        if (!device.opened) await device.open();
+        return true;
+      }
+    } catch(e){}
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return false;
+}
+
+async function ensureDevice(){
+  // The disconnect event listener nulls `device` when the controller goes away,
+  // so a stale handle won't survive a disconnect/reconnect. If we still hold an
+  // opened handle, trust it; otherwise re-acquire.
+  if (device && device.opened) return true;
+  return await reacquire();
+}
+
+// Write a field; if the handle is stale (write throws), re-acquire once and retry.
+async function writeFieldSafe(fid, type, value){
+  try {
+    await writeField(fid, type, value);
+  } catch(e){
+    if (await reacquire()) {
+      await writeField(fid, type, value); // retry on the fresh handle
+    } else {
+      throw e;
+    }
+  }
+}
+
+// --- Profile export/import ---
+// A profile is a JSON object of {field_name: value} for every known field, plus a
+// small wrapper with a name and version. The same JSON is consumed by the ds5profile
+// CLI helper (for Playnite auto-apply), so keep the field names in sync with FIELDS.
+function exportProfile(){
+  const settings = {};
+  for (const [fid,key] of FIELDS){ settings[key] = config[key] ?? 0; }
+  const profile = {
+    name: 'ds5dongle-profile',
+    version: 1,
+    note: 'DS5Dongle auto-haptics profile. Apply via the portal (Import) or the ds5profile CLI.',
+    settings
+  };
+  const blob = new Blob([JSON.stringify(profile, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ds5dongle-profile.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('Profile exported');
+}
+
+function importProfile(event){
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      let data = JSON.parse(reader.result);
+      // Accept either a bare {field:value} object or a {settings:{...}} wrapper.
+      const settings = (data && typeof data.settings === 'object') ? data.settings : data;
+      let applied = 0, unknown = [];
+      const known = new Set(FIELDS.map(f => f[1]));
+      for (const k of Object.keys(settings)){
+        if (known.has(k)){ config[k] = settings[k]; applied++; }
+        else unknown.push(k);
+      }
+      render();
+      toast(`Imported ${applied} setting(s)` + (unknown.length?` (ignored ${unknown.length} unknown)`:'') + ' — click Save to Device to apply');
+    }catch(e){
+      toast('Import failed: not a valid profile JSON', true);
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = ''; // allow re-importing the same file
+}
+
+async function saveAll(){
+  try{
+    saving = true; // pause background diagnostic polling so it can't collide
+                   // with the save's reads/writes or the close/reopen cycle
+    if (!(await ensureDevice())){ toast('No device — click Connect', true); return; }
+    // Use writeFieldSafe so a stale handle (after a prior reconnect) is detected
+    // on the first write and recovered, instead of silently failing.
+    for (const [fid,key,type] of FIELDS){
+      await writeFieldSafe(fid, type, config[key] ?? 0);
+    }
+    try { await sendCmd(0x02); } catch(e){ if(await reacquire()) await sendCmd(0x02); } // save to flash
+
+    // Only a few fields require a USB re-enumeration to take effect (polling rate,
+    // audio buffer length, mic/speaker enable). Everything else (auto-haptics,
+    // effect leak, mute, lightbar, volumes) applies live on save. So only trigger
+    // a reconnect when one of those enumeration-time fields actually changed —
+    // this avoids an unnecessary disconnect/reconnect on every save.
+    const ENUM_FIELDS = ['controller_mode','polling_rate_mode','audio_buffer_length','disable_mic','disable_speaker','enable_wake'];
+    let needReconnect = false;
+    for (const k of ENUM_FIELDS){
+      if (savedSnapshot[k] !== config[k]) { needReconnect = true; break; }
+    }
+
+    if (!needReconnect){
+      // No enumeration-time change — settings are already applied live. Just
+      // confirm and refresh the snapshot. No reconnect, no handle churn.
+      savedSnapshot = {...config};
+      toast('Saved');
+      return;
+    }
+
+    toast('Saved — reconnecting…');
+    // A single reconnect: the firmware's 0x03 re-enumerates the USB device. We do
+    // NOT separately close/open the WebHID handle (that would cause a SECOND
+    // visible reconnect); instead we let the firmware reconnect, then re-acquire
+    // the handle that the OS presents after re-enumeration.
+    await new Promise(r => setTimeout(r, 300)); // let flash write finish
+    try { await sendCmd(0x03); } catch(e){ /* device drops here, expected */ }
+    device = null; // drop our reference; the re-enumerated device is a new handle
+    for (let attempt = 0; attempt < 12; attempt++){
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const devs = await navigator.hid.getDevices();
+        const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+        if (d){
+          device = d;
+          if (!device.opened) await device.open();
+          await new Promise(r => setTimeout(r, 350));
+          await readAll();
+          savedSnapshot = {...config};
+          render();
+          toast('Reconnected — settings refreshed');
+          return;
+        }
+      } catch(e){ /* keep trying */ }
+    }
+    render();
+    toast('Saved. Click Connect to reconnect.', true);
+  }catch(e){ toast('Save failed: '+e.message,true); }
+  finally { saving = false; } // always resume background polling
+}
+
+
+async function readDiag(){
+  if(saving || !device || !device.opened) return {br:'-', ch:'-', rssi:null};
+  try {
+    const br = await readField(0x20, 'u16');
+    const ch = await readField(0x21, 'u8');
+    let rssi = await readField(0x22, 'u8');
+    // RSSI is a signed int8 (dBm-ish, closer to 0 = stronger). Convert from u8.
+    if (rssi > 127) rssi -= 256;
+    return {br, ch, rssi};
+  } catch(e){ return {br:'err', ch:'err', rssi:null}; }
+}
+function rssiLabel(r){
+  if (r === null || r === undefined) return 'n/a';
+  // The Pico W radio (CYW43) reports Bluetooth Classic RSSI relative to a
+  // "golden receive range", not absolute dBm: values near 0 mean the signal is
+  // in the ideal range; larger magnitude (either sign) means it's drifting out
+  // of that range. So small |r| = good link, large |r| = marginal.
+  const mag = Math.abs(r);
+  let q;
+  if (mag <= 10) q = 'strong';
+  else if (mag <= 20) q = 'good';
+  else if (mag <= 30) q = 'fair';
+  else q = 'weak';
+  return `${r} (${q})`;
+}
+async function refreshDiag(){
+  const d = await readDiag();
+  const el = document.getElementById('diagbox');
+  if(el) el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}`;
+}
+setInterval(()=>{ if(!saving && device && device.opened && document.getElementById('diagbox')) refreshDiag(); }, 1000);
+
+function render(){
+  const app=document.getElementById('app');
+  const on = device && device.opened;
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">POC</span></h1>
+    <p class="subtitle">awalol RAM base — field-ID protocol</p>
+    <div class="status-bar"><div class="dot ${on?'on':''}"></div>
+      <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}`:'Not connected'}</span>
+      <button class="btn ${on?'btn-outline':'btn-primary'}" onclick="${on?'disconnect()':'connect()'}">${on?'Disconnect':'Connect'}</button>
+    </div>`;
+  if(!on){
+    html += `<div class="card"><p class="info-text">Click Connect and pick your DS5 Bridge.<br>Chrome or Edge required (WebHID).</p></div>`;
+    app.innerHTML=html; return;
+  }
+  for(const section of SECTIONS){
+    html += `<div class="card"><div class="card-title">${section.title}</div>`;
+    for(const [fid,key,type,label,kind,opts] of section.fields){
+      html += `<div class="row"><div><div class="label">${label}</div></div><div>`;
+      if(kind==='bool'){
+        html += `<select onchange="config['${key}']=+this.value;(window._dirty=window._dirty||{})['${key}']=1">
+          <option value="0" ${config[key]==0?'selected':''}>No</option>
+          <option value="1" ${config[key]==1?'selected':''}>Yes</option></select>`;
+      } else if(kind==='select'){
+        html += `<select onchange="config['${key}']=+this.value;(window._dirty=window._dirty||{})['${key}']=1">`;
+        for(const [v,lbl] of Object.entries(opts)) html += `<option value="${v}" ${config[key]==v?'selected':''}>${lbl}</option>`;
+        html += `</select>`;
+      } else {
+        const [min,max]=opts;
+        const step = (type==='f32') ? '0.05' : '1';
+        const val = (config[key]??0);
+        const shown = (type==='f32') ? Number(val).toFixed(2) : val;
+        html += `<input type="number" min="${min}" max="${max}" step="${step}" value="${shown}" onchange="config['${key}']=${type==='f32'?'parseFloat(this.value)':'+this.value'};(window._dirty=window._dirty||{})['${key}']=1">`;
+      }
+      html += `</div></div>`;
+    }
+    html += `</div>`;
+  }
+  html += `<div class="actions">
+    <button class="btn btn-green" onclick="saveAll()">Save to Device</button>
+    <button class="btn btn-outline" onclick="readAll().then(render)">Re-read</button>
+    <button class="btn btn-outline" onclick="exportProfile()">Export Profile</button>
+    <button class="btn btn-outline" onclick="document.getElementById('importFile').click()">Import Profile</button>
+    <input type="file" id="importFile" accept=".json,.ds5profile" style="display:none" onchange="importProfile(event)">
+    <button class="btn btn-outline" onclick="rebootBootloader()">Reboot to Bootloader</button>
+  </div>
+  <div class="card"><div class="card-title">Diagnostic</div>
+    <div id="diagbox" style="font-size:12px;color:var(--sub)">Reading live stream…</div></div>`;
+  app.innerHTML=html;
+}
+
+render();
+</script>
+</body>
+</html>
