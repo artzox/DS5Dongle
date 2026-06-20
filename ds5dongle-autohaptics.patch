@@ -5,7 +5,7 @@
  //
  // Created by awalol on 2026/3/5.
  //
-+// Audio auto-haptics modifications (c) 2026 Serge — MIT License.
++// Audio auto-haptics modifications (c) 2026 artzox — MIT License.
 +// The audio-derived auto-haptics here were inspired by loteran's earlier
 +// auto-haptics work on the DS5Dongle; the DSP was rewritten, but loteran's
 +// state_set-in-RAM insight made stock-clock actuation possible. With thanks.
@@ -301,32 +301,44 @@
  #endif
 --- a/src/bt.cpp
 +++ b/src/bt.cpp
-@@ -657,6 +657,13 @@
+@@ -581,11 +581,13 @@
+ 
+         case HCI_EVENT_DISCONNECTION_COMPLETE: {
+ #if !ENABLE_SERIAL
+-            // Hide the USB device whenever no controller is paired (upstream
+-            // behavior) -- UNLESS wake is enabled at runtime, where we must stay on
+-            // the bus across controller power-cycles so tud_suspend_cb can later fire
+-            // and tud_remote_wakeup() can signal a wake when the controller returns.
+-            if (!get_config().enable_wake) {
++            // Hide the USB device when no controller is paired, whenever the host is awake --
++            // even with wake on -- so it leaves DS4Windows/the host cleanly. Keep it on the bus
++            // ONLY while the host is actually suspended (hiding then re-showing re-enumerates,
++            // and a USB re-connect would wake a sleeping host; and wake needs the device present
++            // to signal a wake). Wake-on no longer means "always stay on the bus" -- only "stay
++            // during sleep".
++            if (!tud_suspended()) {
+                 tud_disconnect();
+             }
+ #endif
+@@ -657,14 +659,15 @@
                      // reads are gated until the snapshot is prepared.
                      dse_on_connect();
  #if !ENABLE_SERIAL
-+                    // With wake enabled, the previous disconnect skipped
-+                    // tud_disconnect() to stay on the bus, so the USB device is
-+                    // still connected here and a bare tud_connect() is a no-op —
-+                    // leaving the controller stuck (yellow LED, non-functional)
-+                    // until a physical replug. Force a clean re-enumeration so the
-+                    // host sees a fresh connect and the handshake completes.
-+                    if (get_config().enable_wake) { tud_disconnect(); sleep_ms(120); }
-                     tud_connect();
+-                    tud_connect();
++                    // don't re-enumerate while the host is suspended -- it would wake a sleeping host
++                    if (!tud_suspended()) tud_connect();
  #endif
                  } else if (packet[0] == 0x02) {
-@@ -664,6 +671,10 @@
+                     printf("Connected DS5 Controller\n");
                      check_dse = false;
                      is_dse = false;
  #if !ENABLE_SERIAL
-+                    // See note above: cycle USB cleanly when wake kept the device
-+                    // on the bus, so the fresh connection actually enumerates
-+                    // (fixes the stuck yellow-LED, non-functional connection).
-+                    if (get_config().enable_wake) { tud_disconnect(); sleep_ms(120); }
-                     tud_connect();
+-                    tud_connect();
++                    if (!tud_suspended()) tud_connect();
  #endif
                  }
-@@ -704,6 +715,35 @@
+             }
+@@ -704,6 +707,35 @@
                  } else if (psm == PSM_HID_INTERRUPT) {
                      printf("[L2CAP] HID Interrupt opened cid=0x%04X\n", local_cid);
                      hid_interrupt_cid = local_cid;
@@ -364,7 +376,15 @@
                      bt_blacklist_remove(current_device_addr);
 --- a/src/cmd.cpp
 +++ b/src/cmd.cpp
-@@ -146,6 +146,24 @@
+@@ -11,6 +11,7 @@
+ 
+ #include "bt.h"
+ #include "config.h"
++#include "wake.h"
+ #include "device/usbd.h"
+ #include "pico/time.h"
+ #include "pico/bootrom.h"
+@@ -146,6 +147,24 @@
              new_config.enable_wake = value;
              break;
          }
@@ -389,7 +409,7 @@
          default:
              printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
              return false;
-@@ -195,6 +213,27 @@
+@@ -195,6 +214,27 @@
              return write_config_value(buffer, bufsize, config.disable_speaker);
          case 0x11:
              return write_config_value(buffer, bufsize, config.enable_wake);
@@ -417,7 +437,15 @@
          default:
              printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
              return false;
-@@ -289,13 +328,15 @@
+@@ -236,6 +276,7 @@
+         }
+         case 0x03: {
+             printf("[CMD] Enter tud reconnect func\n");
++            wake_note_usb_reconnect(); // this disconnect is intentional, not a host sleep
+             tud_disconnect();
+             sleep_ms(150);
+             tud_connect();
+@@ -289,13 +330,15 @@
              feature_data[0x81].assign(buf, buf + sizeof(buf));
              break;
          }
@@ -508,7 +536,7 @@
  //
  // Created by awalol on 2026/5/15.
  //
-+// Auto-haptics / DS4Windows modifications (c) 2026 Serge — MIT License.
++// Auto-haptics / DS4Windows modifications (c) 2026 artzox — MIT License.
 +// The state_set-in-RAM relocation that enables haptic actuation at stock clocks
 +// originates from loteran's auto-haptics work on the DS5Dongle. With thanks.
 +//
@@ -522,7 +550,7 @@
  #include "config.h"
  #include "utils.h"
  
-@@ -41,23 +46,44 @@
+@@ -41,23 +46,43 @@
      set_gain(get_config().speaker_gain);
  }
  
@@ -559,18 +587,17 @@
 +        return false;
      }
  
-+    // Snapshot the state before applying the update so we can detect whether the
-+    // controller-facing output actually changed (upstream "Fix stuck rumble"). When
-+    // the speaker is active, main.cpp skips re-sending the state to the controller
-+    // for efficiency — but that swallowed rumble start/stop commands, leaving the
-+    // motors stuck on. We now report whether anything changed so a genuine rumble
-+    // change is still sent even while audio is playing.
++    // Snapshot before applying, to detect whether the controller-facing output
++    // actually changed (upstream "Fix stuck rumble"). When the speaker is active,
++    // main.cpp skips re-sending state for efficiency, which swallowed rumble
++    // start/stop and left motors stuck on. Report the change so a genuine rumble
++    // change is still sent even while audio plays.
 +    SetStateData old_state = state;
 +
      SetStateData update{};
      memcpy(&update, data, size);
  
-@@ -79,10 +105,31 @@
+@@ -79,10 +104,31 @@
      state.EnableRumbleEmulation = update.EnableRumbleEmulation;
      state.UseRumbleNotHaptics = update.UseRumbleNotHaptics;
      state.EnableImprovedRumbleEmulation = update.EnableImprovedRumbleEmulation;
@@ -603,15 +630,11 @@
      if (state.EnableRumbleEmulation ||
          state.UseRumbleNotHaptics ||
          state.EnableImprovedRumbleEmulation) {
-@@ -171,6 +218,20 @@
+@@ -171,6 +217,16 @@
          offsetof(SetStateData, LedRed),
          sizeof(update.LedRed) * 3
      );
 +
-+    // Did the controller-facing output change? Compare the rumble/motor region
-+    // (first 32 bytes) and the remaining fields past the flag bytes (from offset
-+    // 36). If so, main.cpp must send the update even when the speaker is active,
-+    // otherwise a rumble stop can be swallowed and the motors stay stuck on.
 +    bool changed = false;
 +    if (memcmp(&old_state, &state, 32) != 0) {
 +        changed = true;
@@ -635,3 +658,133 @@
  void set_volume(uint8_t value);
  void set_volume(uint8_t speaker, uint8_t headset);
  
+--- a/src/usb.cpp
++++ b/src/usb.cpp
+@@ -196,6 +196,7 @@
+ 
+ void tud_suspend_cb(bool remote_wakeup_en) {
+     printf("[USB PM] invoke tud_suspend_cb\n");
++    if (!get_config().enable_wake) return; // wake off: leave the controller's BT alone on a USB suspend (see wake.cpp)
+     bt_power_off_controller();
+ }
+ 
+--- a/src/wake.cpp
++++ b/src/wake.cpp
+@@ -28,6 +28,12 @@
+ #define WAKE_KEY_UP_SETTLE_US 200000   // 200 ms between attempts (or before DONE)
+ #define WAKE_REQUEST_TIMEOUT_US 5000000
+ #define WAKE_KEY_ATTEMPTS     2
++#define WAKE_POWEROFF_DEBOUNCE_US 3000000 // 3s: only power off the controller after a
++                                          // sustained suspend (real sleep); ignore brief
++                                          // hub-induced suspends while the host is awake.
++#define WAKE_RECONNECT_GRACE_US   5000000 // 5s: after a deliberate USB reconnect, ignore the
++                                          // suspend it causes (it is not a host sleep).
++                                          // Cleared early when the device re-mounts.
+ 
+ #ifdef WAKE_DEBUG
+ #  define WAKE_DBG(fmt, ...) printf("[wake] " fmt "\n", ##__VA_ARGS__)
+@@ -66,6 +72,10 @@
+ static uint8_t prev_b7 = 0x08;
+ static uint8_t prev_b8 = 0x00;
+ static uint8_t prev_b9 = 0x00;
++// Debounced controller power-off: time of the pending suspend (0 = none pending).
++static volatile uint64_t suspend_at_us = 0;
++// During a deliberate USB reconnect, ignore the suspend it triggers until this time.
++static volatile uint64_t reconnect_until_us = 0;
+ 
+ static void enter_state(wake_state_t s) {
+     state = s;
+@@ -107,13 +117,34 @@
+     critical_section_init(&wake_cs);
+ }
+ 
++// Called right before a deliberate USB reconnect (FUNC_RECONNECT): arm a grace window so the
++// suspend the reconnect causes is ignored, and drop any already-pending debounced power-off.
++void wake_note_usb_reconnect(void) {
++    reconnect_until_us = time_us_64() + WAKE_RECONNECT_GRACE_US;
++    suspend_at_us = 0;
++}
++
+ extern "C" void tud_suspend_cb(bool remote_wakeup_en) {
+     WAKE_DBG("tud_suspend_cb remote_wakeup_en=%d prev_state=%s",
+              (int)remote_wakeup_en, wake_state_name(state));
+-    bt_power_off_controller();
++    // A deliberate Reconnect USB (FUNC_RECONNECT) tears the bus down and back up, which looks
++    // like a suspend but is not a host sleep -- ignore it so it cannot power off the controller.
++    // See wake_note_usb_reconnect().
++    if (time_us_64() < reconnect_until_us) {
++        WAKE_DBG("suspend during reconnect grace -> ignored");
++        return;
++    }
++    // The power-off runs on every genuine suspend, independent of enable_wake (battery-save for
++    // a real sleep/shutdown). A spurious hub suspend is filtered by the debounce below, not a
++    // gate -- it resumes and tud_resume_cb / tud_mount_cb cancel the pending power-off first.
++    // Do NOT gate this on enable_wake, or the controller stops powering off on shutdown.
++    suspend_at_us = time_us_64();
+     host_suspended = true;
+     host_resumed_event = false;
+-    
++
++    // Everything below is the wake-UP path (press a key to wake the host) -- enable_wake only.
++    if (!get_config().enable_wake) return;
++
+     // Unconditionally re-arm on suspend. If a previous wake attempt hung
+     // (e.g. Linux ignored a keystroke and left the endpoint busy forever),
+     // we must abort and reset so the NEXT wake attempt can trigger.
+@@ -140,12 +171,15 @@
+     WAKE_DBG("tud_resume_cb state=%s", wake_state_name(state));
+     host_suspended = false;
+     host_resumed_event = true;
++    suspend_at_us = 0; // resumed before the debounce elapsed -> cancel the power-off
+ }
+ 
+ extern "C" void tud_mount_cb(void) {
+     WAKE_DBG("tud_mount_cb state=%s", wake_state_name(state));
+     host_suspended = false;
+     host_resumed_event = true;
++    suspend_at_us = 0;
++    reconnect_until_us = 0; // reconnect finished re-enumerating; end the grace early
+ }
+ 
+ void wake_on_bt_input(const uint8_t *hid_input, uint16_t len) {
+@@ -195,9 +229,22 @@
+ }
+ 
+ void wake_task(void) {
+-    if (!get_config().enable_wake) return;
+     const uint64_t now = time_us_64();
+ 
++    // Commit the deferred controller power-off once we have stayed suspended past the debounce
++    // window (a genuine host sleep/shutdown). Runs regardless of enable_wake -- it is a
++    // battery-save, not part of the wake-UP path. A transient hub suspend will already have
++    // been cancelled by tud_resume_cb / tud_mount_cb before this fires.
++    if (suspend_at_us != 0 && host_suspended &&
++        now - suspend_at_us >= WAKE_POWEROFF_DEBOUNCE_US) {
++        bt_power_off_controller();
++        suspend_at_us = 0;
++        WAKE_DBG("suspend debounce elapsed -> bt_power_off_controller()");
++    }
++
++    // The wake-UP FSM below only runs when wake is enabled.
++    if (!get_config().enable_wake) return;
++
+     critical_section_enter_blocking(&wake_cs);
+     const wake_state_t s = state;
+     const uint64_t entered = state_entered_us;
+--- a/src/wake.h
++++ b/src/wake.h
+@@ -13,12 +13,14 @@
+ void wake_on_bt_input(const uint8_t *hid_input, uint16_t len);
+ void wake_on_bt_disconnect(void);
+ void wake_task(void);
++void wake_note_usb_reconnect(void);
+ #else
+ static inline void wake_init(void) {}
+ static inline void wake_on_bt_connect(void) {}
+ static inline void wake_on_bt_input(const uint8_t *, uint16_t) {}
+ static inline void wake_on_bt_disconnect(void) {}
+ static inline void wake_task(void) {}
++static inline void wake_note_usb_reconnect(void) {}
+ #endif
+ 
+ #endif //DS5_BRIDGE_WAKE_H

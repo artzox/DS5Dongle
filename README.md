@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.0.1-hotfix2**
+**Version 1.0.2**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -37,7 +37,11 @@ to RAM so native fine haptics and controller audio work without overclocking.
   setting that requires re-enumeration changed).
 
 The **Wake PC on PS Button** feature (USB remote wakeup) is part of the awalol
-v0.7.0 base and is exposed here as a portal toggle.
+v0.7.0 base and is exposed here as a portal toggle. It is **off by default**; enable
+it only if you want the controller's PS button to wake the PC from sleep. In this
+release the controller disconnects cleanly from the host (and DS4Windows) whenever
+the PC is awake, even with wake enabled — the device only stays on the USB bus while
+the PC is actually asleep (where wake needs it).
 
 ---
 
@@ -45,7 +49,7 @@ v0.7.0 base and is exposed here as a portal toggle.
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5dongle-autohaptics-v1.0.1-hotfix2.uf2` to the `RPI-RP2` drive that appears.
+   `ds5dongle-autohaptics-v1.0.2.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -110,7 +114,7 @@ surprise; apply them in the portal and save.)
 | Inactive Time (min) | 12 |
 | Disable Inactive Disconnect | No |
 | Disable Pico LED | No |
-| Wake PC on PS Button | Yes |
+| Wake PC on PS Button | Off (enable only if you want PS-button wake-from-sleep) |
 
 **Advanced — BT Latency (experimental)**
 | Setting | Value |
@@ -241,18 +245,21 @@ is high-passed to protect the small speaker from low-frequency popping.
 - **Wake from sleep** depends on the host's sleep state. USB device remote-wakeup
   works from traditional S3 sleep; behavior under Modern Standby (S0 Low Power Idle)
   varies by system, and the device's "Allow this device to wake the computer"
-  setting must be enabled in Windows Device Manager.
-- **Wake and DS4Windows.** With wake enabled, the USB device stays on the bus after
-  the controller powers off (this is required so a later button press can wake the
-  host). As a side effect, the device may remain listed in DS4Windows after the
-  controller disconnects. If you want the device to disappear cleanly from
-  DS4Windows on disconnect, turn wake off. The two behaviors are inherently in
-  tension because wake needs the persistent USB presence.
-- **Wake and reconnection.** Because wake keeps the device on the bus, the firmware
-  forces a clean USB re-enumeration when the controller reconnects, so the
-  connection completes normally (this fixes a stuck, non-functional connection that
-  could otherwise occur with wake enabled). Reconnection may occasionally take a
-  moment longer as a result.
+  setting must be enabled in Windows Device Manager. Connecting from sleep can take
+  a few extra seconds (the controller's Bluetooth is powered off during sleep and
+  must re-establish on wake); some variability here is inherent to the Bluetooth
+  reconnect path.
+- **Wake and DS4Windows.** With wake enabled, the controller still disconnects
+  cleanly from the host (and DS4Windows) whenever the PC is awake — turning the
+  controller off no longer leaves a phantom USB device behind. The device is kept on
+  the USB bus only while the PC is actually suspended, so a button press can wake it;
+  once the PC is awake again, normal clean-disconnect behavior applies. (This
+  resolves the earlier limitation where wake kept the device permanently on the bus.)
+- **Hub-induced suspends.** A brief USB suspend caused by a flaky hub (while the host
+  is awake) no longer powers off the controller. The power-off is debounced so only a
+  sustained suspend — a real sleep or shutdown — powers the controller off; transient
+  hub blips are ridden through. A deliberate "Reconnect USB" from the portal is also
+  exempted, so saving settings that reconnect does not drop the controller.
 
 ---
 
@@ -281,10 +288,12 @@ The resulting `ds5-bridge.uf2` is the firmware.
   speaker mute)
 - `src/state_mgr.cpp` — DS4Windows rumble-mode fix, rumble value capture,
   lightbar-off-in-Replace, `state_set` in RAM
-- `src/bt.cpp` — BT flush timeout / QoS controls, RSSI signal strength readout
+- `src/bt.cpp` — BT flush timeout / QoS controls, RSSI signal strength readout, clean controller disconnect when the host is awake (clears DS4Windows even with wake on), suspend-aware connect/disconnect
 - `src/config.h` / `src/config.cpp` — config fields, validation, defaults
 - `src/cmd.cpp` — config field-ID read/write handlers, diagnostics, reboot-to-bootloader
 - `src/main.cpp` / `src/state_mgr.h` — stuck-rumble fix (send state to the controller when it changes even while the speaker is active)
+- `src/wake.cpp` / `src/wake.h` — USB suspend/wake hardening: debounced controller power-off (ride out hub-induced suspends), and a grace window so a deliberate USB reconnect is not treated as a host sleep (ported from upstream PR #186)
+- `src/usb.cpp` — suspend-callback gate so the controller's Bluetooth is left alone on a USB suspend when wake is off
 
 ---
 
@@ -307,6 +316,12 @@ Thanks also to the broader DS5Dongle contributors and to awalol for the complete
 RAM relocation in v0.7.0 that keeps native haptics and controller audio working
 without overclocking, and for the wake-on-PS-button implementation.
 
+**Upstream fixes incorporated.** The stuck-rumble fix is based on **mik9's** upstream
+"Fix stuck rumble" commit. The USB suspend/wake hardening (debounced power-off to ride
+out hub-induced suspends, plus the reconnect grace window) is based on
+**up2urheadlights'** upstream pull request #186. Both were adapted to the v0.7.0 base
+used here. Thank you.
+
 Licensed under the **MIT License** — see [LICENSE](LICENSE). The original awalol
 copyright notice is preserved as required.
 
@@ -314,7 +329,7 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5dongle-autohaptics-v1.0.1-hotfix2.uf2` — the firmware (flash this)
+- `ds5dongle-autohaptics-v1.0.2.uf2` — the firmware (flash this)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `src/` — the modified source files
 - `ds5dongle-autohaptics.patch` — unified diff against awalol v0.7.0

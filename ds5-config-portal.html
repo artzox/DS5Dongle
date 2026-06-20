@@ -90,6 +90,20 @@ const FIELDS = SECTIONS.flatMap(s => s.fields);
 
 let device = null;
 let saving = false; // suspends background diagnostic polling during save/reconnect
+
+// When the controller is turned off (disconnected), WebHID fires a disconnect
+// event. Without handling it, our cached `device` keeps reporting opened===true
+// even though its connection is dead, so the next save writes to a stale handle
+// and fails (requiring a manual reconnect). Null the handle on disconnect so the
+// next save's ensureDevice() cleanly re-acquires the freshly-reconnected device.
+if (navigator.hid && navigator.hid.addEventListener) {
+  navigator.hid.addEventListener('disconnect', (e) => {
+    if (device && e.device === device) {
+      device = null;
+      if (typeof render === 'function') { try { render(); } catch(_){} }
+    }
+  });
+}
 let savedSnapshot = {}; // last-saved config, to detect which fields changed on save
 let config = {};
 
@@ -218,6 +232,9 @@ async function reacquire(){
 }
 
 async function ensureDevice(){
+  // The disconnect event listener nulls `device` when the controller goes away,
+  // so a stale handle won't survive a disconnect/reconnect. If we still hold an
+  // opened handle, trust it; otherwise re-acquire.
   if (device && device.opened) return true;
   return await reacquire();
 }

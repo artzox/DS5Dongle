@@ -2,6 +2,48 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.2] — 2026-06-20
+
+Makes the **Wake PC on PS Button** feature genuinely usable alongside DS4Windows, and
+hardens USB suspend handling. Wake remains **off by default**.
+
+### Fixed
+- **Clean controller disconnect with wake enabled.** Previously, enabling wake kept the
+  USB device on the bus after the controller powered off, so the controller lingered in
+  DS4Windows and the configuration portal could read stale/zero values. The controller
+  now disconnects cleanly from the host whenever the PC is awake — even with wake on —
+  and the device is kept on the bus only while the PC is actually suspended (where wake
+  needs it to signal a wake-up). Turning the controller off no longer leaves a phantom
+  USB device behind.
+- **Ride out hub-induced USB suspends.** Some USB hubs briefly suspend a live bus while
+  the host is awake; since the base firmware a suspend immediately powered off the
+  controller's Bluetooth, dropping the controller behind such hubs. The power-off is now
+  debounced (committed only after a sustained suspend — a real sleep or shutdown), so
+  transient hub blips are ridden through. (Ported from upstream PR #186 by
+  up2urheadlights.)
+- **Deliberate USB reconnect no longer drops the controller.** A portal "Reconnect USB"
+  (used when saving settings that require re-enumeration) briefly looks like a suspend.
+  A grace window now exempts it, so saving such settings no longer powers off the
+  controller. This also resolves the save instability that could occur with wake enabled.
+- **Portal: stale handle after controller reconnect.** The configuration portal now
+  listens for the WebHID disconnect event and releases its device handle, so saving
+  immediately after disconnecting and reconnecting the controller works without manually
+  clicking Connect again.
+
+### Added
+- **Wake PC on PS Button** is exposed as a portal toggle (in *Device & Connection*),
+  off by default. Enable it only if you want the controller's PS button to wake the PC
+  from sleep.
+
+### Notes
+- The stuck-rumble fix from 1.0.1-hotfix2 is included and confirmed compatible with the
+  clean-disconnect behavior (the earlier disconnect regression was the wake feature, not
+  the rumble fix).
+- Connecting from sleep can take a few extra seconds; some variability is inherent to the
+  Bluetooth reconnect path and is not specific to this build.
+- After flashing, run `flash_nuke.uf2` first if you are coming from a different config
+  layout.
+
 ## [1.0.1-hotfix2] — 2026-06-19
 
 Adds an upstream stuck-rumble fix, ported to this build.
@@ -134,6 +176,7 @@ Initial internal build. Built on awalol/DS5Dongle v0.7.0.
 - The firmware ships with stock defaults; see the README "Suggested setup" for a
   tuned auto-haptics + effect-leak configuration to apply in the portal.
 
+[1.0.2]: https://github.com/awalol/DS5Dongle
 [1.0.1-hotfix2]: https://github.com/awalol/DS5Dongle
 [1.0.1-hotfix]: https://github.com/awalol/DS5Dongle
 [1.0.1]: https://github.com/awalol/DS5Dongle

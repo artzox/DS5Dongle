@@ -1,7 +1,7 @@
 MIT License
 
 Copyright (c) 2026 awalol (DS5Dongle, base project)
-Copyright (c) 2026 Serge (auto-haptics, DS4Windows compatibility, effect leak, and related modifications)
+Copyright (c) 2026 artzox (auto-haptics, DS4Windows compatibility, effect leak, and related modifications)
 
 This project is a derivative of awalol/DS5Dongle (https://github.com/awalol/DS5Dongle),
 which is itself MIT licensed. The original copyright notice is retained above as
@@ -12,6 +12,13 @@ earlier auto-haptics work of loteran on the DS5Dongle. While the DSP and related
 code here were independently rewritten, loteran's original experiments — in
 particular relocating `state_set` to RAM, which enabled haptic actuation at stock
 clock speeds — were the foundation that made this feature possible. With thanks.
+
+Acknowledgment: the stuck-rumble fix (sending controller state when it changes even
+while the speaker is active) is based on mik9's upstream "Fix stuck rumble" commit to
+DS5Dongle. The USB suspend/wake hardening (debounced controller power-off to ride out
+hub-induced suspends, and a grace window so a deliberate USB reconnect is not mistaken
+for a host sleep) is based on up2urheadlights' upstream pull request #186 to DS5Dongle.
+Both were adapted to the v0.7.0 base used here. With thanks.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
