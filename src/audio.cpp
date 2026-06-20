@@ -1,7 +1,7 @@
 //
 // Created by awalol on 2026/3/5.
 //
-// Audio auto-haptics modifications (c) 2026 Serge — MIT License.
+// Audio auto-haptics modifications (c) 2026 artzox — MIT License.
 // The audio-derived auto-haptics here were inspired by loteran's earlier
 // auto-haptics work on the DS5Dongle; the DSP was rewritten, but loteran's
 // state_set-in-RAM insight made stock-clock actuation possible. With thanks.

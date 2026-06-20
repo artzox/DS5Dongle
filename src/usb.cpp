@@ -196,6 +196,7 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_
 
 void tud_suspend_cb(bool remote_wakeup_en) {
     printf("[USB PM] invoke tud_suspend_cb\n");
+    if (!get_config().enable_wake) return; // wake off: leave the controller's BT alone on a USB suspend (see wake.cpp)
     bt_power_off_controller();
 }
 

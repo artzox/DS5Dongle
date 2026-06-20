@@ -1,7 +1,7 @@
 //
 // Created by awalol on 2026/5/15.
 //
-// Auto-haptics / DS4Windows modifications (c) 2026 Serge — MIT License.
+// Auto-haptics / DS4Windows modifications (c) 2026 artzox — MIT License.
 // The state_set-in-RAM relocation that enables haptic actuation at stock clocks
 // originates from loteran's auto-haptics work on the DS5Dongle. With thanks.
 //
@@ -76,12 +76,11 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         return false;
     }
 
-    // Snapshot the state before applying the update so we can detect whether the
-    // controller-facing output actually changed (upstream "Fix stuck rumble"). When
-    // the speaker is active, main.cpp skips re-sending the state to the controller
-    // for efficiency — but that swallowed rumble start/stop commands, leaving the
-    // motors stuck on. We now report whether anything changed so a genuine rumble
-    // change is still sent even while audio is playing.
+    // Snapshot before applying, to detect whether the controller-facing output
+    // actually changed (upstream "Fix stuck rumble"). When the speaker is active,
+    // main.cpp skips re-sending state for efficiency, which swallowed rumble
+    // start/stop and left motors stuck on. Report the change so a genuine rumble
+    // change is still sent even while audio plays.
     SetStateData old_state = state;
 
     SetStateData update{};
@@ -219,10 +218,6 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         sizeof(update.LedRed) * 3
     );
 
-    // Did the controller-facing output change? Compare the rumble/motor region
-    // (first 32 bytes) and the remaining fields past the flag bytes (from offset
-    // 36). If so, main.cpp must send the update even when the speaker is active,
-    // otherwise a rumble stop can be swallowed and the motors stay stuck on.
     bool changed = false;
     if (memcmp(&old_state, &state, 32) != 0) {
         changed = true;

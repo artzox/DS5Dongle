@@ -11,6 +11,7 @@
 
 #include "bt.h"
 #include "config.h"
+#include "wake.h"
 #include "device/usbd.h"
 #include "pico/time.h"
 #include "pico/bootrom.h"
@@ -275,6 +276,7 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
         }
         case 0x03: {
             printf("[CMD] Enter tud reconnect func\n");
+            wake_note_usb_reconnect(); // this disconnect is intentional, not a host sleep
             tud_disconnect();
             sleep_ms(150);
             tud_connect();
