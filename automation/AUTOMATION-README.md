@@ -44,6 +44,14 @@ audio-driven auto-haptics games.
    matching is case-insensitive and partial). Games listed here use native
    haptics; everything else uses audio-driven auto-haptics.
 
+   > **Tip - let the log capture exact names for you.** You don't have to type game
+   > names from memory. Wire up Playnite first (step 5), then launch each of your
+   > native-haptics games once. Every launch writes a line to `ds5-automation.log`
+   > like `[start] game: 'Ratchet & Clank: Rift Apart'`. Copy the exact names from
+   > the log into `native-games.txt` (a distinctive word from each is enough). This
+   > guarantees your entries match what Playnite actually passes, avoiding typos or
+   > edition-suffix mismatches.
+
 5. **Wire up Playnite** - Settings -> Scripts (for all games), paste the lines the
    installer printed:
    - Before starting a game: `"<folder>\ds5-start.bat" "{Name}"`
