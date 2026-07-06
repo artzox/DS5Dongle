@@ -33,6 +33,20 @@ to RAM so native fine haptics and controller audio work without overclocking.
   and selectable filter slope (6/12/24 dB/oct).
 - **Lightbar control**, **live RSSI / signal display**, **reboot-to-bootloader**,
   and **experimental BT latency controls** (flush timeout, QoS).
+- **Trigger-to-rumble (R2T)** — routes rumble into the trigger actuators as a
+  tactile buzz, per trigger, with an "only while pressed" option, strength, and
+  frequency. Useful for feeling rumble through the triggers in games that only
+  send classic rumble.
+- **Adaptive triggers (Stage 1)** — L2-gated constant resistance on R2: hold the
+  aim trigger and R2 stiffens, for a light adaptive-trigger effect in games that
+  don't drive the triggers themselves. Configurable strength, arm threshold, and
+  start position; also available always-on.
+- **Gyro-to-stick aiming** — maps controller motion onto the right stick for
+  motion aiming, with selectable activation (always / while L2 held / touchpad
+  touch / ratchet), sensitivity, horizontal axis source (yaw or roll), and
+  per-axis invert.
+- **Native-haptics anti-alias** — optional smoothing on the native haptic stream
+  (off / light / strong) to tame gritty high-frequency actuator noise.
 - **Sectioned web configuration portal** with smart save (only reconnects when a
   setting that requires re-enumeration changed).
 
@@ -149,7 +163,7 @@ Notes on the suggested values:
 
 ## Configuration reference
 
-The portal is organized into four sections.
+The portal groups settings into the sections below.
 
 ### Auto-Haptics
 | Setting | Range | Default | Notes |
@@ -183,10 +197,68 @@ The portal is organized into four sections.
 | Disable Mic | on/off | off | Disable the controller microphone |
 | Disable Speaker | on/off | off | Disable the controller speaker |
 
+### Trigger-to-Rumble (R2T)
+Routes the rumble signal into the trigger actuators as a buzz.
+
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| R2T Mode | Off / Left / Right / Both | Off | Which trigger(s) buzz from rumble |
+| Only While Pressed | on/off | off | on = buzz only when the trigger is pulled past ~25%; off = buzz whenever there's rumble |
+| Strength | 0–100 | 100 | Amplitude multiplier on the rumble value |
+| Frequency | 1–255 | 60 | Buzz frequency of the trigger effect (higher = finer/tighter buzz) |
+
+*Guide:* enable **Both** with **Only While Pressed = on** for a subtle "feel the
+rumble in your triggers only when you're using them" effect. With **off**, the
+triggers buzz continuously whenever the game sends rumble. If a game drives its own
+trigger effects, R2T yields to it by default (see *Force Override* below).
+
+### Adaptive Triggers (Stage 1)
+L2-gated constant resistance on R2 — hold the aim trigger and R2 stiffens.
+
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| AT Mode | Off / L2-gated / Always-on | Off | L2-gated = R2 resists only while L2 is held past the threshold; Always-on = R2 always resists |
+| Strength | 0–100 | 70 | Resistance intensity (mapped to the effect's 0–7 range) |
+| Arm Threshold | 1–255 | 30 | How far L2 must be pulled to arm R2 resistance (~12% at default) |
+| Start Position | 0–9 | 0 | Trigger-travel zone where resistance begins (0 = from the start) |
+
+*Guide:* **L2-gated** gives a shooter-style "aim to feel the trigger tension"
+effect without needing native adaptive-trigger support. Resistance wins over R2T
+vibration while engaged, so you can run **R2T Both + AT L2-gated** together: the
+triggers buzz with rumble normally, and R2 stiffens the moment you aim.
+
+### Gyro-to-Stick
+Maps controller motion onto the right stick for motion aiming.
+
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| Gyro Mode | Off / L2-held / Always / Touch-enables / Ratchet | Off | When motion aiming is active (see below) |
+| Sensitivity | 1–100 | 50 | Motion-to-stick gain (50 ≈ raw) |
+| Horizontal Axis | Yaw / Roll | Yaw | Yaw = turn the controller; Roll = tilt it sideways |
+| Invert | X / Y / both | off | Per-axis inversion (bit0 = X, bit1 = Y) |
+
+*Gyro modes:*
+- **L2-held** — aim only while L2 is held (flick-stick-style precision on ADS).
+- **Always** — motion aiming on at all times.
+- **Touch-enables** — active only while a finger is on the touchpad.
+- **Ratchet** — always on, but touching the touchpad *pauses* it so you can
+  reposition (like lifting a mouse).
+
+*Guide:* **L2-held + Yaw** is the most natural starting point for shooters — turn
+the controller to fine-tune aim only when aiming down sights. Raise sensitivity if
+the motion feels sluggish; use invert if the direction feels backwards.
+
+### Trigger/Gyro — shared
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| Native Haptics Anti-alias | Off / Light / Strong | Light | Smooths the native haptic stream (Off = raw/gritty; Strong = softest) |
+| Force Override | on/off | off | on = force R2T/AT even when a game/app is sending its own trigger effects (off = yield to the game) |
+
 ### Device & Connection
 | Setting | Range | Default | Notes |
 |---|---|---|---|
 | Polling Rate | 250 / 500 / Real-time | Real-time | USB report rate |
+| Audio Buffer Length | 16–128 | 64 | Lower = snappier haptics/lower latency; higher = more audio stability |
 | Audio Buffer Length | 16–128 | 64 | Lower = snappier haptics/lower latency; higher = more audio stability |
 | Inactive Time (min) | 5–60 | 30 | Idle timeout before disconnect |
 | Disable Inactive Disconnect | on/off | off | Never auto-disconnect when idle |
