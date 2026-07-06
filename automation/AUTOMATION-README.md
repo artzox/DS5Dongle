@@ -55,16 +55,9 @@ audio-driven auto-haptics games.
 5. **Wire up Playnite** - Settings -> Scripts (for all games), paste these into the
    **script boxes** (not an application/action field):
    - Before starting a game:
-     `& "<folder>\ds5-global-start.ps1" -GameName $game.Name`
+     `& "<folder>\ds5-start.bat" "{Name}"`
    - After exiting a game:
-     `& "<folder>\ds5-global-stop.ps1" -GameName $game.Name`
-
-   > **Why the inline `$game.Name` and not the `.bat` with `{Name}`?** Playnite's
-   > `{Name}` token does not reliably expand in script fields, which is why the log
-   > can show `game: ''`. Reading `$game.Name` directly in the script box is reliable
-   > because `$game` is a real Playnite variable available in that runtime. The `.bat`
-   > files still work for manual/double-click use, but for Playnite use the inline
-   > calls above.
+     `& "<folder>\ds5-stop.bat" "{Name}"`
 
 That's it. Launch a game and check `ds5-automation.log` to confirm the decision.
 
