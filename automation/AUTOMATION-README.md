@@ -52,10 +52,19 @@ audio-driven auto-haptics games.
    > guarantees your entries match what Playnite actually passes, avoiding typos or
    > edition-suffix mismatches.
 
-5. **Wire up Playnite** - Settings -> Scripts (for all games), paste the lines the
-   installer printed:
-   - Before starting a game: `"<folder>\ds5-start.bat" "{Name}"`
-   - After exiting a game:   `"<folder>\ds5-stop.bat" "{Name}"`
+5. **Wire up Playnite** - Settings -> Scripts (for all games), paste these into the
+   **script boxes** (not an application/action field):
+   - Before starting a game:
+     `& "<folder>\ds5-global-start.ps1" -GameName $game.Name`
+   - After exiting a game:
+     `& "<folder>\ds5-global-stop.ps1" -GameName $game.Name`
+
+   > **Why the inline `$game.Name` and not the `.bat` with `{Name}`?** Playnite's
+   > `{Name}` token does not reliably expand in script fields, which is why the log
+   > can show `game: ''`. Reading `$game.Name` directly in the script box is reliable
+   > because `$game` is a real Playnite variable available in that runtime. The `.bat`
+   > files still work for manual/double-click use, but for Playnite use the inline
+   > calls above.
 
 That's it. Launch a game and check `ds5-automation.log` to confirm the decision.
 
@@ -79,8 +88,9 @@ overwrite the default file of the same name).
 Everything is logged to `ds5-automation.log`. Each line shows the game name, the
 native match, which profile applied, and audio start/stop.
 
-- `game: ''` (empty) - Playnite didn't pass the name; make sure the script line
-  includes `"{Name}"` and that `{Name}` expands in the field you used.
+- `game: ''` (empty) - Playnite didn't pass the name. This happens when using the
+  `.bat` with `{Name}` (which Playnite doesn't reliably expand). Fix: use the inline
+  `& "...\ds5-global-start.ps1" -GameName $game.Name` call in the script box instead.
 - Audio ran on a native game - the name didn't match `native-games.txt`; check the
   logged name and add a distinctive substring of it to the list.
 - Profile didn't apply - confirm you did the one-time portal Connect, and that the
