@@ -26,10 +26,38 @@ Usage:
 Stop with Ctrl+C.
 """
 
+import os
 import sys
 import time
 import argparse
 import struct
+
+# --- pythonw / no-console safety --------------------------------------------
+# The automation launches this script with pythonw.exe so it runs silently.
+# Under pythonw, sys.stdout and sys.stderr are None, so the FIRST print() (or
+# stderr.write) raises AttributeError and the process dies within a second --
+# which looks exactly like "the automation didn't start ds5audio". Redirect all
+# output to ds5audio.log next to this script so silent runs both work and stay
+# diagnosable. Must happen BEFORE the pyaudiowpatch import (its error path
+# writes to stderr too).
+if sys.stdout is None or sys.stderr is None:
+    _log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ds5audio.log")
+    try:
+        # Keep the log from growing forever: start fresh past ~1 MB.
+        _mode = "a"
+        try:
+            if os.path.getsize(_log_path) > 1_000_000:
+                _mode = "w"
+        except OSError:
+            pass
+        _log = open(_log_path, _mode, buffering=1, encoding="utf-8", errors="replace")
+        _log.write("\n=== ds5audio (pythonw) session %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    except OSError:
+        _log = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = _log
+    if sys.stderr is None:
+        sys.stderr = _log
 
 try:
     import pyaudiowpatch as pyaudio
@@ -426,91 +454,156 @@ def run(args):
                   f"would avoid resampling, but is optional.)")
         print("Routing… press Ctrl+C to stop.\n")
 
-        # --- Open capture stream (WASAPI loopback) ---
-        in_stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=in_channels,
-            rate=in_rate,
-            frames_per_buffer=FRAMES_PER_BUFFER,
-            input=True,
-            input_device_index=in_index,
-        )
+        # Remember the capture device NAME so we can re-find it after a USB
+        # re-enumeration (device indices shift; names don't).
+        in_name = in_info.get("name") or ""
 
-        # --- Open playback stream to the dongle (4ch @ 48k) ---
-        out_stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=DONGLE_CHANNELS,
-            rate=DONGLE_RATE,
-            frames_per_buffer=FRAMES_PER_BUFFER,
-            output=True,
-            output_device_index=out_index,
-        )
-
-        frames = 0
-        t0 = time.time()
-        # Diagnostic level metering: track peak amplitude of the CAPTURED audio so a
-        # single --verbose run reveals whether the capture path is producing signal.
-        # If converted-rumble haptics work but audio/leak don't, and this peak stays
-        # ~0, the problem is the capture source (wrong loopback device, or the app is
-        # outputting to a different device than the one being captured), not routing.
-        meter_peak = 0
-        meter_frames = 0
+        # --- Stream, with auto-reconnect --------------------------------------
+        # A profile apply over WebHID or any USB hiccup can make the dongle
+        # re-enumerate mid-stream; WASAPI then kills the stream with
+        # OSError [-9999] "Unanticipated host error" (also seen if another
+        # process grabs the endpoint). Instead of dying -- and losing haptics
+        # until the next game launch -- close everything, re-find the devices,
+        # and resume. Only give up after many consecutive failures.
+        MAX_RECONNECTS = 15
+        reconnects = 0
+        in_stream = None
+        out_stream = None
         while True:
-            data = in_stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
+            try:
+                # (Re)read the capture format -- it can change after re-enumeration.
+                in_info = pa.get_device_info_by_index(in_index)
+                in_rate = int(in_info.get("defaultSampleRate", DONGLE_RATE))
+                in_channels = int(in_info.get("maxInputChannels", 2)) or 2
 
-            # If capture isn't stereo, downmix/handle: take first two channels.
-            if in_channels != 2:
-                # interleaved int16; pull ch0,ch1 from each frame
-                total = len(data) // (2 * in_channels)
-                alls = struct.unpack("<" + "h" * (total * in_channels), data)
-                st = bytearray()
-                for i in range(total):
-                    base = i * in_channels
-                    l = alls[base]
-                    r = alls[base + 1] if in_channels > 1 else alls[base]
-                    st += struct.pack("<hh", l, r)
-                data = bytes(st)
+                # --- Open capture stream (WASAPI loopback) ---
+                in_stream = pa.open(
+                    format=pyaudio.paInt16,
+                    channels=in_channels,
+                    rate=in_rate,
+                    frames_per_buffer=FRAMES_PER_BUFFER,
+                    input=True,
+                    input_device_index=in_index,
+                )
 
-            # Peak meter on the captured stereo (pre-resample) for diagnostics.
-            if args.verbose and data:
-                try:
-                    smp = struct.unpack("<" + "h" * (len(data) // 2), data)
-                    p = max((abs(x) for x in smp), default=0)
-                    if p > meter_peak: meter_peak = p
-                except Exception:
-                    pass
+                # --- Open playback stream to the dongle (4ch @ 48k) ---
+                out_stream = pa.open(
+                    format=pyaudio.paInt16,
+                    channels=DONGLE_CHANNELS,
+                    rate=DONGLE_RATE,
+                    frames_per_buffer=FRAMES_PER_BUFFER,
+                    output=True,
+                    output_device_index=out_index,
+                )
 
-            # Resample to the dongle's rate if the capture rate differs (e.g. 44100
-            # default output -> 48000 dongle). This is what VoiceMeeter did invisibly;
-            # doing it here means you can leave Windows at any sample rate.
-            data = resample_stereo(data, in_rate, DONGLE_RATE)
+                if reconnects:
+                    print("Reconnected - resuming stream.")
+                reconnects = 0
 
-            out = map_stereo_to_4ch(data, args.map)
-            out_stream.write(out, exception_on_underflow=False)
-
-            frames += FRAMES_PER_BUFFER
-            # Roughly once per second, report captured peak level (0-32767).
-            meter_frames += FRAMES_PER_BUFFER
-            if args.verbose and meter_frames >= in_rate:
-                pct = int(meter_peak * 100 / 32767)
-                bar = "#" * (pct // 5)
-                print(f"  captured peak: {meter_peak:5d}/32767 [{bar:<20}] {pct:3d}%"
-                      + ("   <-- SILENT: check capture source!" if meter_peak < 32 else ""),
-                      flush=True)
+                frames = 0
+                t0 = time.time()
+                # Diagnostic level metering: track peak amplitude of the CAPTURED audio so a
+                # single --verbose run reveals whether the capture path is producing signal.
+                # If converted-rumble haptics work but audio/leak don't, and this peak stays
+                # ~0, the problem is the capture source (wrong loopback device, or the app is
+                # outputting to a different device than the one being captured), not routing.
                 meter_peak = 0
                 meter_frames = 0
-            if args.verbose and frames % (DONGLE_RATE) < FRAMES_PER_BUFFER:
-                elapsed = time.time() - t0
-                print(f"  {frames} frames routed ({elapsed:.0f}s)")
+                while True:
+                    data = in_stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
+
+                    # If capture isn't stereo, downmix/handle: take first two channels.
+                    if in_channels != 2:
+                        # interleaved int16; pull ch0,ch1 from each frame
+                        total = len(data) // (2 * in_channels)
+                        alls = struct.unpack("<" + "h" * (total * in_channels), data)
+                        st = bytearray()
+                        for i in range(total):
+                            base = i * in_channels
+                            l = alls[base]
+                            r = alls[base + 1] if in_channels > 1 else alls[base]
+                            st += struct.pack("<hh", l, r)
+                        data = bytes(st)
+
+                    # Peak meter on the captured stereo (pre-resample) for diagnostics.
+                    if args.verbose and data:
+                        try:
+                            smp = struct.unpack("<" + "h" * (len(data) // 2), data)
+                            p = max((abs(x) for x in smp), default=0)
+                            if p > meter_peak: meter_peak = p
+                        except Exception:
+                            pass
+
+                    # Resample to the dongle's rate if the capture rate differs (e.g. 44100
+                    # default output -> 48000 dongle). This is what VoiceMeeter did invisibly;
+                    # doing it here means you can leave Windows at any sample rate.
+                    data = resample_stereo(data, in_rate, DONGLE_RATE)
+
+                    out = map_stereo_to_4ch(data, args.map)
+                    out_stream.write(out, exception_on_underflow=False)
+
+                    frames += FRAMES_PER_BUFFER
+                    # Roughly once per second, report captured peak level (0-32767).
+                    meter_frames += FRAMES_PER_BUFFER
+                    if args.verbose and meter_frames >= in_rate:
+                        pct = int(meter_peak * 100 / 32767)
+                        bar = "#" * (pct // 5)
+                        print(f"  captured peak: {meter_peak:5d}/32767 [{bar:<20}] {pct:3d}%"
+                              + ("   <-- SILENT: check capture source!" if meter_peak < 32 else ""),
+                              flush=True)
+                        meter_peak = 0
+                        meter_frames = 0
+                    if args.verbose and frames % (DONGLE_RATE) < FRAMES_PER_BUFFER:
+                        elapsed = time.time() - t0
+                        print(f"  {frames} frames routed ({elapsed:.0f}s)")
+
+            except OSError as e:
+                reconnects += 1
+                if reconnects > MAX_RECONNECTS:
+                    sys.stderr.write(f"ERROR: audio stream failed {MAX_RECONNECTS} times "
+                                     f"in a row; giving up ({e}).\n")
+                    return 1
+                print(f"Audio stream error ({e}) - reconnecting "
+                      f"{reconnects}/{MAX_RECONNECTS}...", flush=True)
+                for s_ in (in_stream, out_stream):
+                    try:
+                        if s_ is not None:
+                            s_.stop_stream(); s_.close()
+                    except Exception:
+                        pass
+                in_stream = out_stream = None
+                try:
+                    pa.terminate()
+                except Exception:
+                    pass
+                time.sleep(1.2)
+                # Fresh PyAudio instance: the device list is snapshotted at init,
+                # so re-enumerated devices are invisible to the old instance.
+                pa = pyaudio.PyAudio()
+                nd = find_dongle_output(pa)
+                if nd is not None:
+                    out_index = nd
+                if in_name:
+                    ni = find_loopback_by_name(pa, in_name)
+                    if ni is None:
+                        ni = find_default_loopback(pa)
+                    if ni is not None:
+                        in_index = ni
+                continue
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0
     finally:
-        try: in_stream.stop_stream(); in_stream.close()
-        except Exception: pass
-        try: out_stream.stop_stream(); out_stream.close()
-        except Exception: pass
-        pa.terminate()
+        for _s in (locals().get("in_stream"), locals().get("out_stream")):
+            try:
+                if _s is not None:
+                    _s.stop_stream(); _s.close()
+            except Exception:
+                pass
+        try:
+            pa.terminate()
+        except Exception:
+            pass
     return 0
 
 

@@ -55,9 +55,16 @@ audio-driven auto-haptics games.
 5. **Wire up Playnite** - Settings -> Scripts (for all games), paste these into the
    **script boxes** (not an application/action field):
    - Before starting a game:
-     `& "<folder>\ds5-start.bat" "{Name}"`
+     `& "<folder>\ds5-global-start.ps1" -GameName $game.Name`
    - After exiting a game:
-     `& "<folder>\ds5-stop.bat" "{Name}"`
+     `& "<folder>\ds5-global-stop.ps1" -GameName $game.Name`
+
+   > **Why the inline `$game.Name` and not the `.bat` with `{Name}`?** Playnite's
+   > `{Name}` token does not reliably expand in script fields, which is why the log
+   > can show `game: ''`. Reading `$game.Name` directly in the script box is reliable
+   > because `$game` is a real Playnite variable available in that runtime. The `.bat`
+   > files still work for manual/double-click use, but for Playnite use the inline
+   > calls above.
 
 That's it. Launch a game and check `ds5-automation.log` to confirm the decision.
 
@@ -79,7 +86,19 @@ overwrite the default file of the same name).
 ## Troubleshooting
 
 Everything is logged to `ds5-automation.log`. Each line shows the game name, the
-native match, which profile applied, and audio start/stop.
+native match, which profile applied, the Python interpreters found, and audio
+start/stop. When ds5audio runs silently (pythonw), its own output goes to
+`ds5audio.log` in this folder, so Python-side errors are never lost.
+
+Two generated debug tools:
+
+- `ds5-start-visible.bat` - runs the real start pipeline with nothing hidden:
+  log lines print to the PowerShell window, and ds5audio opens in a console
+  that stays open even if it crashes, so you can read the error.
+- `ds5-test-audio.bat` - runs ds5audio.py directly (no PowerShell layer),
+  after stopping any running instance, and prints the exit code.
+
+Common cases:
 
 - `game: ''` (empty) - Playnite didn't pass the name. This happens when using the
   `.bat` with `{Name}` (which Playnite doesn't reliably expand). Fix: use the inline
@@ -88,5 +107,11 @@ native match, which profile applied, and audio start/stop.
   logged name and add a distinctive substring of it to the list.
 - Profile didn't apply - confirm you did the one-time portal Connect, and that the
   `.autoapply.html` files are in `profiles\`.
-- Audio silent - run `python ds5audio.py --verbose` and watch the captured peak; if
-  it's ~0, pass `--capture-name "PART OF YOUR OUTPUT DEVICE NAME"`.
+- Audio silent - run `ds5-test-audio.bat` and watch the captured peak; if it's ~0,
+  set `$AudioArgs = @("--capture-name","PART OF YOUR OUTPUT DEVICE NAME")` in
+  `ds5-global-start.ps1`.
+- Wrong Python picked (e.g. PyAudioWPatch lives in a different install) - set
+  `$PythonExe = "C:\full\path\to\python.exe"` near the top of
+  `ds5-global-start.ps1` to pin the interpreter; auto-detect is skipped.
+- `Audio stream error ... reconnecting` in ds5audio.log is normal after a profile
+  apply or USB hiccup - ds5audio re-finds the dongle and resumes by itself.
