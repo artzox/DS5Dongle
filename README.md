@@ -447,7 +447,10 @@ Quick start:
 2. Run `automation\ds5-setup.bat` — it detects its own folder and generates the
    Playnite scripts with correct paths, then prints the exact lines to paste into
    Playnite's script settings.
-3. See `automation\AUTOMATION-README.md` for the full walkthrough.
+3. To fill in your native-haptics game list, launch each such game once and copy
+   the exact names from `ds5-automation.log` (each launch logs `game: '...'`) into
+   `native-games.txt` — no need to type them from memory.
+4. See `automation\AUTOMATION-README.md` for the full walkthrough.
 
 This is entirely optional — the firmware and config portal work on their own without
 it. The automation just removes the manual steps if you use Playnite.
