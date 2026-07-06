@@ -2,6 +2,91 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.9] — 2026-07-05
+
+Trigger-to-rumble "on press" now genuinely gates on trigger position, and native
+haptics no longer break when trigger/rumble features are enabled.
+
+### Fixed
+- **`r2t` "on press" buzzed continuously.** The Vibration effect (0x26) buzzes
+  whenever amplitude > 0 regardless of trigger position — restricting the zone
+  bitmap did not gate it. "On press" now reads the actual analog trigger position
+  and only emits vibration once the trigger is pulled past ~25%, so the triggers
+  stay quiet at rest. Right-trigger position (`g_r2_pos`) is now captured alongside
+  the existing left (`g_l2_pos`) in both report paths.
+
+### Notes
+- **Documented the wake / native-haptics conflict.** Enabling *Wake PC on PS Button*
+  changes the USB descriptor (USB 2.1 + BOS + keyboard interface), which can make
+  Steam Input stop recognizing the pad as a native DualSense — reverting some games
+  (e.g. *Ratchet & Clank*) to Xbox-style rumble and disabling speaker audio. Keep
+  wake off for native-haptics games, or switch it per-game. See the README.
+- **Native haptics broke when trigger/rumble features were enabled (needed a
+  reflash to recover).** The trigger-FFB "Allow" bits share output report byte 0
+  with the rumble/haptic-mode flags. Synthesis left those Allow bits asserted in
+  the persistent state, corrupting the haptic-control byte every cycle. The release
+  path now clears the Allow bits (only when the game itself isn't driving the
+  trigger), the game's Allow bits are synced from the host each cycle, and the
+  staleness watchdog clears rather than sets them. Disabling a feature now restores
+  native haptics live, without a reflash.
+
+## [1.0.8] — 2026-07-04
+
+### Fixed
+- **Byte-0 haptics corruption** (see 1.0.9 notes — the persistent-Allow-bit fix
+  landed here and was refined in 1.0.9).
+- **Audio-transport fields could starve native haptics.** Documented that
+  `audio_buffer_length` below the default and `polling_rate_mode = 2` (real-time)
+  can interfere with the native haptic actuator stream, which shares the audio USB
+  pipe. Defaults are safe; these are opt-in.
+
+### Added
+- **Channel-level audio diagnostics.** Portal now shows peak signal on ch0-1
+  (speaker / DSP source) and ch2-3 (native actuators), so you can see whether real
+  audio is reaching the DSP input (fields 0x37 / 0x38).
+
+## [1.0.7] — 2026-07-04
+
+### Fixed
+- **Trigger feature priority and phantom L2.** Resistance now wins over vibration
+  while a trigger is engaged (vibration resumes on release). Rumble bytes are only
+  trusted when the host marks them valid, preventing phantom trigger buzz from
+  apps that reuse those report offsets. Added an always-on resistance mode and a
+  staleness watchdog that releases synthesis after 300 ms of no updates.
+
+## [1.0.6] — 2026-07-03
+
+### Added
+- **Adaptive-trigger Stage 1 (`at`)** — L2-gated constant resistance on R2.
+- **Trigger-to-rumble (`r2t`)** — convert rumble into trigger vibration, per-trigger.
+- **Gyro-to-stick (`gyro`)** — motion aiming with configurable axis, sensitivity,
+  invert, and touch modes; corrected yaw axis (byte 17) and 10x sensitivity range.
+- **Haptics anti-alias** (`haptics_aa`) — 3-way filter on the native haptic stream.
+- **Synthesis force override** and per-feature diagnostics fields.
+- **Firmware version reported** to the portal (fields 0x7D/0x7E/0x7F).
+
+### Fixed
+- Empty-payload ownership bug where Steam Input / DS4Windows Allow-bit spam was
+  mistaken for the game owning a trigger, disabling the synthesized effects.
+
+## [1.0.5] — 2026-07-02
+
+### Added
+- Initial trigger-synthesis groundwork (rumble-to-trigger prototype) and expanded
+  configuration surface, with RAM/CELT optimizations to fit the feature data.
+
+## [1.0.4] — 2026-07-01
+
+### Changed
+- RAM optimization pass (CELT working memory) to make room for the auto-haptics
+  feature data without exhausting the Pico 2W's memory.
+
+## [1.0.3] — 2026-06-30
+
+### Added
+- Auto-haptics feature-data plumbing and configuration fields beyond the 1.0.2
+  base, ahead of the trigger/gyro features in 1.0.6.
+
 ## [1.0.2] — 2026-06-20
 
 Makes the **Wake PC on PS Button** feature genuinely usable alongside DS4Windows, and

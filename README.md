@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.0.2**
+**Version 1.0.9**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -43,13 +43,25 @@ release the controller disconnects cleanly from the host (and DS4Windows) whenev
 the PC is awake, even with wake enabled — the device only stays on the USB bus while
 the PC is actually asleep (where wake needs it).
 
+> **Important — leave wake OFF for gaming.** Enabling wake changes the controller's
+> USB descriptor (it advertises USB 2.1 with a BOS descriptor and adds a keyboard
+> interface, which the wake mechanism requires). That altered descriptor no longer
+> looks like a "pure" DualSense, so Steam Input can stop recognizing it — games such
+> as *Ratchet & Clank* may fall back to Xbox-style rumble instead of native DualSense
+> haptics, and the controller's speaker audio can stop working. This is a fundamental
+> trade-off, not a bug: wake **needs** the descriptor change, and that change is what
+> Steam Input reacts to. Keep wake **off** for games that rely on native haptics; if
+> you want PS-button wake at the desktop, use a per-game profile that turns wake off
+> when a game launches (the optional Playnite automation in `automation/` does this
+> by switching profiles per game).
+
 ---
 
 ## Quick start
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5dongle-autohaptics-v1.0.2.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.0.9.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -255,6 +267,16 @@ is high-passed to protect the small speaker from low-frequency popping.
   the USB bus only while the PC is actually suspended, so a button press can wake it;
   once the PC is awake again, normal clean-disconnect behavior applies. (This
   resolves the earlier limitation where wake kept the device permanently on the bus.)
+- **Wake and native haptics (Steam Input).** Enabling wake alters the USB descriptor
+  (USB 2.1 + BOS descriptor + an added keyboard interface — all required by remote
+  wakeup). Because the device then no longer matches a plain DualSense fingerprint,
+  Steam Input may treat it as a generic/XInput pad: games like *Ratchet & Clank* can
+  revert to Xbox-style rumble instead of native DualSense haptics, and speaker audio
+  may stop. There is no way to keep wake's descriptor changes *and* the exact
+  DualSense fingerprint Steam Input wants — they conflict by design. Recommended:
+  keep wake **off** for native-haptics games. If you want wake at the desktop, apply
+  a wake-off profile on game launch (a re-enumeration applies the new descriptor);
+  the optional Playnite automation does this automatically per game.
 - **Hub-induced suspends.** A brief USB suspend caused by a flaky hub (while the host
   is awake) no longer powers off the controller. The power-off is debounced so only a
   sustained suspend — a real sleep or shutdown — powers the controller off; transient
@@ -267,12 +289,14 @@ is high-passed to protect the small speaker from low-frequency popping.
 
 Requires the Pico SDK (2.x) with the Pico 2W board support.
 
+> **Important:** pin TinyUSB to 0.20.0 inside the SDK (`cd pico-sdk/lib/tinyusb && git checkout 0.20.0`). The SDK's bundled 0.18.0 fails to build the audio interface (`TUD_AUDIO_EP_SIZE`). Also run `git submodule update --init --recursive` so `lib/WDL` and `lib/opus` are present.
+
 ```sh
 git clone https://github.com/awalol/DS5Dongle.git
 cd DS5Dongle
 git checkout v0.7.0
 # apply the changes:
-git apply /path/to/ds5dongle-autohaptics.patch
+git apply /path/to/ds5dongle-v1.0.9.patch
 # or copy the files from src/ over the originals
 
 mkdir build && cd build
@@ -329,10 +353,29 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5dongle-autohaptics-v1.0.2.uf2` — the firmware (flash this)
+- `ds5-v1.0.9.uf2` — the firmware (flash this)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
+- `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
+  different config layout)
 - `src/` — the modified source files
-- `ds5dongle-autohaptics.patch` — unified diff against awalol v0.7.0
+- `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0
 - `LICENSE` — MIT license
 - `README.md` — this file
 - `CHANGELOG.md` — version history
+- `automation/` — **optional** Playnite integration (see below)
+
+## Optional: Playnite automation
+
+The `automation/` folder adds hands-off Playnite integration: it auto-applies a
+profile per game and routes game audio to the dongle for audio-driven auto-haptics,
+switching automatically between native-haptics games and everything else.
+
+Quick start:
+1. Install Python 3 and `pip install pyaudiowpatch`.
+2. Run `automation\ds5-setup.bat` — it detects its own folder and generates the
+   Playnite scripts with correct paths, then prints the exact lines to paste into
+   Playnite's script settings.
+3. See `automation\AUTOMATION-README.md` for the full walkthrough.
+
+This is entirely optional — the firmware and config portal work on their own without
+it. The automation just removes the manual steps if you use Playnite.

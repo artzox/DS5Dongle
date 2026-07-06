@@ -73,12 +73,35 @@ const SECTIONS = [
     [0x10,'disable_speaker','u8','Disable Speaker','bool'],
   ]},
   { title: 'Device & Connection', fields: [
+    [0x0b,'controller_mode','u8','Controller Type','select',{0:'DualSense (DS5)',1:'DualSense Edge (DSE)',2:'Auto-detect'}],
     [0x09,'polling_rate_mode','u8','Polling Rate','select',{0:'250 Hz',1:'500 Hz',2:'Real-time'}],
     [0x0a,'audio_buffer_length','u8','Audio Buffer Length','number',[16,128]],
     [0x06,'inactive_time','u8','Inactive Time (min)','number',[5,60]],
     [0x07,'disable_inactive_disconnect','u8','Disable Inactive Disconnect','bool'],
     [0x08,'disable_pico_led','u8','Disable Pico LED','bool'],
     [0x11,'enable_wake','u8','Wake PC on PS Button','bool'],
+  ]},
+  { title: 'Native Haptics', fields: [
+    [0x33,'haptics_aa','u8','Smoothing (anti-alias filter)','select',{1:'Off — raw & gritty (pre-1.0.4 texture)',2:'Light — kills grit, keeps snap (recommended)',3:'Strong — maximum smooth (can feel muted)'}],
+  ]},
+  { title: 'Rumble → Trigger (experimental)', fields: [
+    [0x27,'r2t_mode','u8','Mode','select',{0:'Off',1:'Left trigger only',2:'Right trigger only',3:'Both triggers'}],
+    [0x28,'r2t_on_press','u8','Only vibrate when trigger pressed','bool'],
+    [0x29,'r2t_strength','u8','Strength','number',[0,100]],
+    [0x2a,'r2t_frequency','u8','Vibration frequency','number',[1,255]],
+    [0x34,'synth_force','u8','Force override (ignore game/app trigger effects — applies to r2t AND adaptive triggers)','bool'],
+  ]},
+  { title: 'Adaptive Triggers — L2-gated R2 (experimental, Stage 1)', fields: [
+    [0x2b,'at_mode','u8','Mode','select',{0:'Off',1:'L2 (aim) adds R2 resistance',2:'Always on'}],
+    [0x2c,'at_strength','u8','Resistance strength','number',[0,100]],
+    [0x2d,'at_threshold','u8','L2 press threshold to arm','number',[1,255]],
+    [0x2e,'at_start_pos','u8','R2 resistance start position','number',[0,9]],
+  ]},
+  { title: 'Gyro Aiming (experimental)', fields: [
+    [0x2f,'gyro_mode','u8','Mode','select',{0:'Off',1:'Only while L2 (aim) held',2:'Always on',3:'Only while touchpad touched',4:'Always on — touch touchpad to pause (ratchet)'}],
+    [0x30,'gyro_sens','u8','Sensitivity','number',[1,100]],
+    [0x31,'gyro_axis','u8','Horizontal source','select',{0:'Yaw (turn controller)',1:'Roll (tilt sideways)'}],
+    [0x32,'gyro_invert','u8','Invert axes (0=none, 1=X, 2=Y, 3=both)','number',[0,3]],
   ]},
   { title: 'Advanced — BT Latency (experimental)', fields: [
     [0x1b,'bt_flush_timeout','u16','BT Flush Timeout (0=off)','select',{0:'Off (reliable)',4:'~2.5ms (low latency)',6:'~3.75ms',10:'~6.25ms',16:'~10ms'}],
@@ -103,7 +126,31 @@ if (navigator.hid && navigator.hid.addEventListener) {
       if (typeof render === 'function') { try { render(); } catch(_){} }
     }
   });
+
+  // When the device returns (controller reconnects, or the USB device re-enumerates
+  // after the PC wakes from sleep), WebHID fires a connect event. Re-acquire the
+  // fresh handle and re-read, so the portal recovers automatically instead of
+  // sitting with a stale/null handle and showing 0 values. This specifically fixes
+  // the "all values 0 after PC wake" case: sleep/resume re-enumerates the device,
+  // and without this the portal never re-grabs it.
+  navigator.hid.addEventListener('connect', async (e) => {
+    try {
+      const d = e.device;
+      if (!d || d.vendorId !== SONY_VID) return;
+      if (d.productId !== DS5_PID && d.productId !== DSE_PID) return;
+      // Only auto-recover if we don't already hold a live handle.
+      if (device && device.opened) return;
+      device = d;
+      if (!device.opened) await device.open();
+      // Give the firmware a moment to (re)populate its feature data after connect,
+      // then re-read so the UI reflects real values rather than 0s.
+      await new Promise(r => setTimeout(r, 400));
+      if (typeof readAll === 'function') { await readAll(); }
+      if (typeof render === 'function') { render(); }
+    } catch (_) { /* leave handle; user can click Connect */ }
+  });
 }
+let fwVer = null;
 let savedSnapshot = {}; // last-saved config, to detect which fields changed on save
 let config = {};
 
@@ -118,6 +165,15 @@ async function connect(){
     if(!device.opened) await device.open();
     await readAll();
     savedSnapshot = {...config}; // baseline for change detection on save
+    // Firmware version (read-only fields added in fw 1.0.5; older builds lack them)
+    fwVer = null;
+    try{
+      const maj = await readField(0x7d,'u8');
+      const min = await readField(0x7e,'u8');
+      const pat = await readField(0x7f,'u8');
+      const cfgv = await readField(0x00,'u16');
+      if (maj !== null && maj !== undefined) fwVer = {maj,min,pat,cfgv};
+    }catch(e){ /* pre-1.0.5 firmware: no version fields */ }
     render();
   }catch(e){ toast('Connect failed: '+e.message,true); }
 }
@@ -252,6 +308,100 @@ async function writeFieldSafe(fid, type, value){
   }
 }
 
+// --- Profile export/import ---
+// A profile is a JSON object of {field_name: value} for every known field, plus a
+// small wrapper with a name and version. The same JSON is consumed by the ds5profile
+// CLI helper (for Playnite auto-apply), so keep the field names in sync with FIELDS.
+function exportProfile(){
+  const settings = {};
+  for (const [fid,key] of FIELDS){ settings[key] = config[key] ?? 0; }
+  const profile = {
+    name: 'ds5dongle-profile',
+    version: 1,
+    note: 'DS5Dongle auto-haptics profile. Apply via the portal (Import) or the ds5profile CLI.',
+    settings
+  };
+  const blob = new Blob([JSON.stringify(profile, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ds5dongle-profile.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('Profile exported');
+}
+
+// Export a STANDALONE auto-applying HTML with the current settings baked in.
+// Double-clicking the exported file silently reconnects to the dongle and applies
+// + saves these settings — no Python, no separate generator, no URL params.
+async function exportHtml(){
+  const name = (prompt('Name this profile (used for the filename + banner):',
+                       'DS5 Profile') || 'DS5 Profile').trim() || 'DS5 Profile';
+  const settings = {};
+  for (const [fid,key] of FIELDS){ settings[key] = config[key] ?? 0; }
+  const embedded = { name, version: 1, settings };
+
+  // Get the portal's own source BYTE-EXACT by fetching the file itself, rather than
+  // document.documentElement.outerHTML (which the browser may re-normalize —
+  // changing whitespace/comments so the embed hook is no longer found). fetch on a
+  // file:// page returns the raw bytes on disk, which contain the hook verbatim.
+  let html;
+  try {
+    const resp = await fetch(location.href);
+    html = await resp.text();
+  } catch(e){
+    // Some browsers block fetch of local files; fall back to outerHTML.
+    html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+  }
+  // Safe JSON for an inline script (avoid accidentally closing the script tag).
+  const embedJs = JSON.stringify(embedded).replace(/<\//g, '<\\/');
+  // Match the hook specifically: it sits at the start of a line (column 0), whereas
+  // this code below is indented — so a multiline ^-anchored match hits only the real
+  // hook, never this line.
+  const re = /^const EMBEDDED_PROFILE = null;/m;
+  if (!re.test(html)){
+    toast('Export HTML failed: embed hook not found. Make sure you opened THIS portal '
+          + 'file (not a generated copy).', true);
+    return;
+  }
+  html = html.replace(re, 'const EMBEDDED_PROFILE = ' + embedJs + ';');
+
+  const safe = name.replace(/[^\w.-]+/g, '_');
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = safe + '.autoapply.html';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('Exported ' + safe + '.autoapply.html — open it to auto-apply this profile');
+}
+
+function importProfile(event){
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      let data = JSON.parse(reader.result);
+      // Accept either a bare {field:value} object or a {settings:{...}} wrapper.
+      const settings = (data && typeof data.settings === 'object') ? data.settings : data;
+      let applied = 0, unknown = [];
+      const known = new Set(FIELDS.map(f => f[1]));
+      for (const k of Object.keys(settings)){
+        if (known.has(k)){ config[k] = settings[k]; applied++; }
+        else unknown.push(k);
+      }
+      render();
+      toast(`Imported ${applied} setting(s)` + (unknown.length?` (ignored ${unknown.length} unknown)`:'') + ' — click Save to Device to apply');
+    }catch(e){
+      toast('Import failed: not a valid profile JSON', true);
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = ''; // allow re-importing the same file
+}
+
 async function saveAll(){
   try{
     saving = true; // pause background diagnostic polling so it can't collide
@@ -269,7 +419,7 @@ async function saveAll(){
     // effect leak, mute, lightbar, volumes) applies live on save. So only trigger
     // a reconnect when one of those enumeration-time fields actually changed —
     // this avoids an unnecessary disconnect/reconnect on every save.
-    const ENUM_FIELDS = ['polling_rate_mode','audio_buffer_length','disable_mic','disable_speaker','enable_wake'];
+    const ENUM_FIELDS = ['controller_mode','polling_rate_mode','audio_buffer_length','disable_mic','disable_speaker','enable_wake'];
     let needReconnect = false;
     for (const k of ENUM_FIELDS){
       if (savedSnapshot[k] !== config[k]) { needReconnect = true; break; }
@@ -323,8 +473,11 @@ async function readDiag(){
     let rssi = await readField(0x22, 'u8');
     // RSSI is a signed int8 (dBm-ish, closer to 0 = stronger). Convert from u8.
     if (rssi > 127) rssi -= 256;
-    return {br, ch, rssi};
-  } catch(e){ return {br:'err', ch:'err', rssi:null}; }
+    let gy = null, sy = null, c01 = null, c23 = null;
+    try { gy = await readField(0x35, 'u16'); sy = await readField(0x36, 'u8'); } catch(e) {}
+    try { c01 = await readField(0x37, 'u16'); c23 = await readField(0x38, 'u16'); } catch(e) {}
+    return {br, ch, rssi, gy, sy, c01, c23};
+  } catch(e){ return {br:'err', ch:'err', rssi:null, gy:null, sy:null, c01:null, c23:null}; }
 }
 function rssiLabel(r){
   if (r === null || r === undefined) return 'n/a';
@@ -343,7 +496,23 @@ function rssiLabel(r){
 async function refreshDiag(){
   const d = await readDiag();
   const el = document.getElementById('diagbox');
-  if(el) el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}`;
+  if(el){
+    let extra = '';
+    if (d.c01 !== null && d.c01 !== undefined)
+      extra += `<br>Audio signal: ch0-1 (speaker/DSP source)=${d.c01}, ch2-3 (native actuators)=${d.c23}  (ch0-1 must be >0 for auto-haptics/effect-leak — if 0 here, the audio routing isn't putting game sound on those channels)`;
+    if (d.gy !== null && d.gy !== undefined)
+      extra += `<br>Gyro |raw| (horizontal): ${d.gy}  (0 = gyro off or controller still — wave it to calibrate sensitivity)`;
+    if (d.sy !== null && d.sy !== undefined){
+      const f = [];
+      if (d.sy & 1)  f.push('game-owns-L2');
+      if (d.sy & 2)  f.push('game-owns-R2');
+      if (d.sy & 4)  f.push('synth-L2');
+      if (d.sy & 8)  f.push('synth-R2');
+      if (d.sy & 16) f.push('AT-engaged');
+      extra += `<br>Trigger synthesis: ${f.length ? f.join(' · ') : 'idle'}  (game-owns = your r2t/at yield; use Force override to take over)`;
+    }
+    el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}${extra}`;
+  }
 }
 setInterval(()=>{ if(!saving && device && device.opened && document.getElementById('diagbox')) refreshDiag(); }, 1000);
 
@@ -353,7 +522,7 @@ function render(){
   let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">POC</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
-      <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}`:'Not connected'}</span>
+      <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
       <button class="btn ${on?'btn-outline':'btn-primary'}" onclick="${on?'disconnect()':'connect()'}">${on?'Disconnect':'Connect'}</button>
     </div>`;
   if(!on){
@@ -386,6 +555,10 @@ function render(){
   html += `<div class="actions">
     <button class="btn btn-green" onclick="saveAll()">Save to Device</button>
     <button class="btn btn-outline" onclick="readAll().then(render)">Re-read</button>
+    <button class="btn btn-outline" onclick="exportProfile()">Export Profile</button>
+    <button class="btn btn-outline" onclick="exportHtml()">Export HTML</button>
+    <button class="btn btn-outline" onclick="document.getElementById('importFile').click()">Import Profile</button>
+    <input type="file" id="importFile" accept=".json,.ds5profile" style="display:none" onchange="importProfile(event)">
     <button class="btn btn-outline" onclick="rebootBootloader()">Reboot to Bootloader</button>
   </div>
   <div class="card"><div class="card-title">Diagnostic</div>
@@ -394,6 +567,108 @@ function render(){
 }
 
 render();
+
+// --- Automation entry point (for AHK / Playnite) ---------------------------
+// Opening the portal with ?autoapply=<base64-json>[&autosave=1] will:
+//   1. silently reconnect to an already-granted device (no picker — WebHID allows
+//      getDevices() without a gesture once the user has granted access once),
+//   2. apply the profile encoded in the URL,
+//   3. optionally Save to Device automatically.
+// This lets a one-line AHK script (which just launches a URL) drive the whole
+// config, avoiding fragile dialog-clicking. First-time setup still needs one
+// manual Connect so the browser grants HID access to this origin.
+// EMBEDDED_PROFILE: when this file is generated per-profile (see
+// make-autoapply-html.py), the profile JSON is stamped in here and auto-applies
+// the moment the page opens — no URL parameters needed, just open the file.
+// Left null in the master portal (which behaves normally / uses URL params).
+const EMBEDDED_PROFILE = null; /*EMBED_PROFILE_HOOK*/
+const EMBEDDED_AUTOSAVE = true; /*EMBED_AUTOSAVE_HOOK*/
+
+async function autoApply(){
+  const params = new URLSearchParams(location.search);
+  const enc = params.get('autoapply');
+  // Source priority: an embedded profile (generated per-file) wins; else URL param.
+  let json = null, profileName = null, autosave = false;
+  if (EMBEDDED_PROFILE){
+    json = EMBEDDED_PROFILE;
+    profileName = (EMBEDDED_PROFILE && EMBEDDED_PROFILE.name) || 'embedded profile';
+    autosave = EMBEDDED_AUTOSAVE;
+  } else if (enc){
+    try { json = JSON.parse(decodeURIComponent(escape(atob(enc)))); }
+    catch(e){ try { json = JSON.parse(atob(enc)); } catch(_){ json = null; } }
+    profileName = params.get('profile');
+    autosave = params.get('autosave')==='1';
+  }
+  if (!json) return; // normal portal usage, no auto-apply
+
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:14px;'
+    + 'background:#1e293b;color:#e2e8f0;font:15px system-ui;text-align:center;z-index:9999';
+  document.body.appendChild(banner);
+
+  // The actual apply routine, usable both for silent auto-run and for a click.
+  async function doApply(viaGesture){
+    try {
+      banner.textContent = 'Auto-apply: connecting…';
+      banner.style.background = '#1e293b';
+      let devs = await navigator.hid.getDevices();
+      let d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+      // If not already granted, a gesture lets us prompt the picker directly.
+      if (!d && viaGesture){
+        const picked = await navigator.hid.requestDevice({ filters: [
+          {vendorId:SONY_VID, productId:DS5_PID}, {vendorId:SONY_VID, productId:DSE_PID} ]});
+        d = picked && picked[0];
+      }
+      if (!d){
+        showConnectButton('No granted device yet — click to connect and apply.');
+        return;
+      }
+      device = d;
+      if (!device.opened) await device.open();
+      await new Promise(r=>setTimeout(r,300));
+      await readAll();
+
+      const settings = (json && typeof json.settings==='object') ? json.settings : json;
+      const known = new Set(FIELDS.map(f=>f[1]));
+      let applied=0;
+      for (const k of Object.keys(settings)){ if(known.has(k)){ config[k]=settings[k]; applied++; } }
+      render();
+      banner.textContent = `Loaded ${applied} setting(s)` + (profileName?` from "${profileName}"`:'');
+
+      if (autosave){
+        banner.textContent += ' — saving…';
+        await saveAll();
+        banner.textContent = `"${profileName||'profile'}" saved to device ✓`;
+        banner.style.background = '#14532d';
+      } else {
+        banner.textContent += ' — click Save to Device to apply.';
+      }
+      setTimeout(()=>banner.remove(), 4000);
+    } catch(e){
+      showConnectButton('Auto-apply hit an error (' + e.message + ') — click to retry.');
+    }
+  }
+
+  function showConnectButton(msg){
+    banner.style.background = '#7c2d12';
+    banner.innerHTML = '';
+    const span = document.createElement('span'); span.textContent = msg + '  ';
+    const btn = document.createElement('button');
+    btn.textContent = 'Connect & Apply';
+    btn.style.cssText = 'padding:6px 14px;margin-left:8px;border-radius:6px;border:0;'
+      + 'background:#22c55e;color:#052e16;font-weight:600;cursor:pointer';
+    btn.onclick = () => doApply(true);
+    banner.appendChild(span); banner.appendChild(btn);
+  }
+
+  // Try a fully silent apply first. If the browser blocks the gesture-free
+  // connect (some Chrome versions require a click to reopen a granted device),
+  // the catch/no-device path shows the one-click button instead — so the file
+  // always works, best case with zero clicks, worst case with one.
+  try { await doApply(false); }
+  catch(e){ showConnectButton('Click to connect and apply this profile.'); }
+}
+autoApply();
 </script>
 </body>
 </html>

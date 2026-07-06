@@ -133,20 +133,31 @@ target_include_directories(wdl_resampler PUBLIC
 #set(OPUS_FIXED_POINT ON)
 add_subdirectory(lib/opus)
 
-# Phase A.3: Move libopus to RAM via .time_critical sections.
-# libopus is built by add_subdirectory(lib/opus); the target `opus` is defined in
-# the subdirectory's CMakeLists.txt, so we can't use POST_BUILD here. Instead we
-# use a stamp-file custom command + custom target that runs after opus is built
-# and before ds5-bridge links. Renames .text and .rodata of libopus.a to
-# .time_critical.* which the Pico SDK linker places in RAM (loaded from flash
-# at boot, executed from RAM at runtime). ~220 KB total relocated, ~5-6 ms boot
-# time impact for the flash-to-RAM copy.
+# Phase A.3: Move the Opus CELT hot path to RAM via .time_critical sections.
+# SELECTIVE relocation: only the CELT encode/decode translation units (~104 KB)
+# are moved to RAM, NOT the whole libopus.a (~220 KB). SILK never executes on the
+# audio path (Opus runs in OPUS_APPLICATION_RESTRICTED_LOWDELAY = CELT-only), and
+# Opus read-only data stays in flash too. Net: ~130 KB more free heap, same audio.
+# (Ported from awalol PR #207, decoupled from Wake-on-LAN.)
+#
+# The members are the CELT encode + decode hot path that actually runs in
+# RESTRICTED_LOWDELAY. A CLEAN build is required if this member list changes (the
+# archive is mutated in place); a normal rebuild is idempotent/safe.
+set(OPUS_RAM_MEMBERS
+    "celt_encoder.c|opus_encoder.c|bands.c|quant_bands.c|rate.c|vq.c|pitch.c|opus.c|kiss_fft.c|entenc.c|celt_lpc.c|cwrs.c|mdct.c|laplace.c|celt.c|mathops.c|modes.c|entcode.c|celt_decoder.c|opus_decoder.c|entdec.c")
+
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp
-    COMMAND ${CMAKE_OBJCOPY} --rename-section .text=.time_critical.opus_text --rename-section .rodata=.time_critical.opus_rodata --rename-section .rodata.str1.4=.time_critical.opus_strings $<TARGET_FILE:opus>
+    COMMAND ${CMAKE_COMMAND}
+        "-DAR=${CMAKE_AR}"
+        "-DOBJCOPY=${CMAKE_OBJCOPY}"
+        "-DARCHIVE=$<TARGET_FILE:opus>"
+        "-DMEMBERS=${OPUS_RAM_MEMBERS}"
+        "-DWORKDIR=${CMAKE_BINARY_DIR}/opus_ram_reloc_work"
+        -P "${CMAKE_SOURCE_DIR}/cmake/relocate_archive_members.cmake"
     COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp
-    DEPENDS $<TARGET_FILE:opus>
-    COMMENT "Phase A.3: relocating libopus to .time_critical.* sections"
+    DEPENDS $<TARGET_FILE:opus> ${CMAKE_SOURCE_DIR}/cmake/relocate_archive_members.cmake
+    COMMENT "Phase A.3: relocating Opus CELT hot path to RAM (.time_critical.opus_text)"
     VERBATIM
 )
 add_custom_target(opus_ram_relocate ALL DEPENDS ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp)
@@ -211,6 +222,14 @@ relocate_to_ram(lib/cyw43-driver/src/cyw43_ll.c.o
 relocate_to_ram(lib/cyw43-driver/src/cyw43_ctrl.c.o
     ".text.cyw43_poll_func=.time_critical.cyw43_poll_func|.text.cyw43_bluetooth_hci_read=.time_critical.cyw43_bluetooth_hci_read|.text.cyw43_bluetooth_hci_write=.time_critical.cyw43_bluetooth_hci_write"
     "Phase B.2: cyw43 poll + BT HCI bus -> RAM")
+# Phase B.2 (from PR #207): the btstack<->cyw43 HCI transport bridge ran from
+# flash, adding an XIP-miss on the per-packet RX drain (data_source_process),
+# the per-packet TX (send_packet) and the HCI read pump (bluetooth_hci_process)
+# that feed the haptics/speaker BT reports. ~152 B to RAM removes that timing
+# variance from the audio transmit path.
+relocate_to_ram(src/rp2_common/pico_cyw43_driver/btstack_hci_transport_cyw43.c.o
+    ".text.hci_transport_data_source_process=.time_critical.hci_transport_ds_process|.text.hci_transport_cyw43_send_packet=.time_critical.hci_transport_cyw43_send|.text.cyw43_bluetooth_hci_process=.time_critical.cyw43_bluetooth_hci_process"
+    "Phase B.2: btstack<->cyw43 HCI transport bridge -> RAM")
 
 # --- Phase B.3: Tier-2 -- run-loop TX pumps + per-transfer submit paths ---
 # state_update is intentionally NOT moved: it runs on the host->controller HID-OUT
