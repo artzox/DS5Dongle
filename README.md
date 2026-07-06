@@ -326,8 +326,8 @@ The resulting `ds5-bridge.uf2` is the firmware.
 This is a derivative of **[awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)**,
 which in turn builds on earlier community work on the DualSense dongle concept.
 
-**Auto-haptics origin — thanks to loteran.** The audio-derived auto-haptics in this
-project were inspired by **loteran's** earlier auto-haptics experiments on the
+**Auto-haptics origin — thanks to [@loteran](https://github.com/loteran).** The audio-derived auto-haptics in this
+project were inspired by **[@loteran](https://github.com/loteran)'s** earlier auto-haptics experiments on the
 DS5Dongle. The single most important insight came from loteran: relocating
 `state_set` to RAM, which is what allows the haptic actuators to fire at stock clock
 speeds (150 MHz) instead of requiring an overclock. The DSP and supporting code here
@@ -338,12 +338,12 @@ exist without it — thank you.
 
 Thanks also to the broader DS5Dongle contributors and to awalol for the complete
 RAM relocation in v0.7.0 that keeps native haptics and controller audio working
-without overclocking, and for the wake-on-PS-button implementation.
+without overclocking, and for the wake-on-PS-button implementation. (**[@awalol](https://github.com/awalol)**)
 
-**Upstream fixes incorporated.** The stuck-rumble fix is based on **mik9's** upstream
+**Upstream fixes incorporated.** The stuck-rumble fix is based on **mik9's** (GitHub handle to confirm) upstream
 "Fix stuck rumble" commit. The USB suspend/wake hardening (debounced power-off to ride
 out hub-induced suspends, plus the reconnect grace window) is based on
-**up2urheadlights'** upstream pull request #186. Both were adapted to the v0.7.0 base
+**[@up2urheadlights](https://github.com/up2urheadlights)'** upstream pull request [#186](https://github.com/awalol/DS5Dongle/pull/186). Both were adapted to the v0.7.0 base
 used here. Thank you.
 
 Licensed under the **MIT License** — see [LICENSE](LICENSE). The original awalol
