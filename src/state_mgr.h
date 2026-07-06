@@ -7,6 +7,7 @@
 #include <cstdint>
 
 void state_init();
+void synth_watchdog();
 void state_set(uint8_t *data, uint8_t size);
 bool state_update(const uint8_t *data, uint8_t size);
 void set_volume(uint8_t value);

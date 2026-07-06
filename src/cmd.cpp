@@ -32,6 +32,12 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
     return true;
 }
 
+// Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
+// can display which build is flashed. Bump on every released build.
+constexpr uint8_t FW_VER_MAJOR = 1;
+constexpr uint8_t FW_VER_MINOR = 0;
+constexpr uint8_t FW_VER_PATCH = 9;
+
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
     if (bufsize < sizeof(T)) {
@@ -165,6 +171,20 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
         case 0x24: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_decay=v; break; }
         case 0x25: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_attack=v; break; }
         case 0x26: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_output_hp_hz=v; break; }
+        case 0x27: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.r2t_mode=v; break; }
+        case 0x28: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.r2t_on_press=v; break; }
+        case 0x29: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.r2t_strength=v; break; }
+        case 0x2a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.r2t_frequency=v; break; }
+        case 0x2b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_mode=v; break; }
+        case 0x2c: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_strength=v; break; }
+        case 0x2d: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_threshold=v; break; }
+        case 0x2e: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_start_pos=v; break; }
+        case 0x2f: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_mode=v; break; }
+        case 0x30: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_sens=v; break; }
+        case 0x31: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_axis=v; break; }
+        case 0x32: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_invert=v; break; }
+        case 0x33: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.haptics_aa=v; break; }
+        case 0x34: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.synth_force=v; break; }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
             return false;
@@ -232,6 +252,28 @@ static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize
         case 0x24: return write_config_value(buffer, bufsize, config.effect_leak_decay);
         case 0x25: return write_config_value(buffer, bufsize, config.effect_leak_attack);
         case 0x26: return write_config_value(buffer, bufsize, config.effect_leak_output_hp_hz);
+        case 0x27: return write_config_value(buffer, bufsize, config.r2t_mode);
+        case 0x28: return write_config_value(buffer, bufsize, config.r2t_on_press);
+        case 0x29: return write_config_value(buffer, bufsize, config.r2t_strength);
+        case 0x2a: return write_config_value(buffer, bufsize, config.r2t_frequency);
+        case 0x2b: return write_config_value(buffer, bufsize, config.at_mode);
+        case 0x2c: return write_config_value(buffer, bufsize, config.at_strength);
+        case 0x2d: return write_config_value(buffer, bufsize, config.at_threshold);
+        case 0x2e: return write_config_value(buffer, bufsize, config.at_start_pos);
+        case 0x2f: return write_config_value(buffer, bufsize, config.gyro_mode);
+        case 0x30: return write_config_value(buffer, bufsize, config.gyro_sens);
+        case 0x31: return write_config_value(buffer, bufsize, config.gyro_axis);
+        case 0x32: return write_config_value(buffer, bufsize, config.gyro_invert);
+        case 0x33: return write_config_value(buffer, bufsize, config.haptics_aa);
+        case 0x34: return write_config_value(buffer, bufsize, config.synth_force);
+        case 0x35: { extern volatile uint16_t g_diag_gyro; return write_config_value(buffer, bufsize, (uint16_t)g_diag_gyro); }
+        case 0x36: { extern volatile uint8_t g_diag_synth; return write_config_value(buffer, bufsize, (uint8_t)g_diag_synth); }
+        case 0x37: { extern volatile uint16_t g_diag_ch01_peak; return write_config_value(buffer, bufsize, (uint16_t)g_diag_ch01_peak); }
+        case 0x38: { extern volatile uint16_t g_diag_ch23_peak; return write_config_value(buffer, bufsize, (uint16_t)g_diag_ch23_peak); }
+        // Read-only firmware version (no write handlers on purpose).
+        case 0x7d: return write_config_value(buffer, bufsize, FW_VER_MAJOR);
+        case 0x7e: return write_config_value(buffer, bufsize, FW_VER_MINOR);
+        case 0x7f: return write_config_value(buffer, bufsize, FW_VER_PATCH);
         case 0x20: { extern volatile uint16_t g_diag_bytes_read; return write_config_value(buffer, bufsize, (uint16_t)g_diag_bytes_read); }
         case 0x21: { extern volatile uint8_t g_diag_actual_ch; return write_config_value(buffer, bufsize, (uint8_t)g_diag_actual_ch); }
         case 0x22: { int8_t rssi = 0; bt_get_signal_strength(&rssi); return write_config_value(buffer, bufsize, (uint8_t)rssi); }

@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 4;
+constexpr uint16_t CONFIG_VERSION = 8;
 constexpr uint32_t CONFIG_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE;
 static Config config{};
 bool is_dse = false;
@@ -131,6 +131,24 @@ void config_valid() {
     if (body->effect_leak_decay > 100) body->effect_leak_decay = 40;
     if (body->effect_leak_attack > 100) body->effect_leak_attack = 50;
     if (body->effect_leak_output_hp_hz < 50 || body->effect_leak_output_hp_hz > 2000) body->effect_leak_output_hp_hz = 200;
+    // Rumble-to-trigger defaults (feature OFF by default).
+    if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
+    if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
+    if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
+    if (body->r2t_frequency < 1) body->r2t_frequency = 60;  // ~mid tactile buzz
+    // Adaptive triggers Stage 1 defaults (OFF by default).
+    if (body->at_mode > 2) body->at_mode = 0;   // 0=off, 1=L2-gated, 2=always on
+    if (body->at_strength > 100) body->at_strength = 70;
+    if (body->at_threshold < 1) body->at_threshold = 30;   // ~12% pull arms it
+    if (body->at_start_pos > 9) body->at_start_pos = 0;    // resist from the start of travel
+    // Gyro aiming defaults (OFF by default).
+    if (body->gyro_mode > 4) body->gyro_mode = 0;
+    if (body->gyro_sens < 1 || body->gyro_sens > 100) body->gyro_sens = 50;
+    if (body->gyro_axis > 1) body->gyro_axis = 0;
+    if (body->gyro_invert > 3) body->gyro_invert = 0;
+    // Native-haptics smoothing: 0 is invalid so a fresh config defaults to Light (2).
+    if (body->haptics_aa < 1 || body->haptics_aa > 3) body->haptics_aa = 2;
+    if (body->synth_force > 1) body->synth_force = 0;
     if (body->enable_wake > 1) {
         body->enable_wake = 0;
         printf("[Config] enable_wake is invalid\n");

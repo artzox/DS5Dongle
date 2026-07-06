@@ -600,7 +600,6 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             bt_rssi = 0;
             hid_control_cid = 0;
             hid_interrupt_cid = 0;
-            feature_data.clear();
             while (queue_try_remove(&send_fifo, NULL)) {}
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
 #if ENABLE_BATT_LED
@@ -916,6 +915,7 @@ void bt_power_off_controller() {
 }
 
 void init_feature() {
+    feature_data.clear();
     get_feature_data(0x09, 20);
     get_feature_data(0x20, 64);
     get_feature_data(0x22, 64);

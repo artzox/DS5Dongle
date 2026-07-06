@@ -55,11 +55,17 @@ queue_t mic_fifo;
 queue_t mic_decode_fifo;
 // Diagnostic: live channel detection, read via config field 0x20.
 volatile uint16_t g_diag_bytes_read = 0;
+volatile uint16_t g_diag_ch01_peak = 0; // peak |sample| ch0-1 (DSP input)
+volatile uint16_t g_diag_ch23_peak = 0; // peak |sample| ch2-3 (native actuators)
 volatile uint8_t  g_diag_actual_ch  = 0;
 // Incoming DS4Windows rumble-emulation motor values (0-255), blended into the
 // actuator signal in Mix mode when auto-haptics is on.
 volatile uint8_t g_rumble_l = 0;
 volatile uint8_t g_rumble_r = 0;
+// Latest L2 (left trigger) analog position from the controller's input report,
+// used by the L2-gated R2 adaptive-trigger feature.
+volatile uint8_t g_l2_pos = 0;
+volatile uint8_t g_r2_pos = 0; // R2 (right trigger) analog position, for r2t on-press gating
 static uint8_t opus_buf[200];
 critical_section_t opus_cs;
 
@@ -152,6 +158,27 @@ void __not_in_flash_func(audio_loop)() {
     if (frames == 0) {
         return;
     }
+    // Diagnostic: peak |sample| on channels 0-1 (the DSP's input for auto-haptics
+    // and effect-leak) and on channels 2-3 (native actuators). Exposed via fields
+    // 0x37 (ch0-1) and 0x38 (ch2-3) so the portal can show whether real signal is
+    // arriving on the DSP-source pair — distinguishes "loopback delivering silence
+    // on 0-1" from "signal present but gated by config/mute".
+    {
+        extern volatile uint16_t g_diag_ch01_peak, g_diag_ch23_peak;
+        int p01 = 0, p23 = 0;
+        for (int i = 0; i < frames; ++i) {
+            int a0 = raw[i * actual_ch];     if (a0 < 0) a0 = -a0;
+            int a1 = raw[i * actual_ch + 1]; if (a1 < 0) a1 = -a1;
+            if (a0 > p01) p01 = a0; if (a1 > p01) p01 = a1;
+            if (actual_ch == 4) {
+                int a2 = raw[i * actual_ch + 2]; if (a2 < 0) a2 = -a2;
+                int a3 = raw[i * actual_ch + 3]; if (a3 < 0) a3 = -a3;
+                if (a2 > p23) p23 = a2; if (a3 > p23) p23 = a3;
+            }
+        }
+        g_diag_ch01_peak = (uint16_t)p01;
+        g_diag_ch23_peak = (uint16_t)p23;
+    }
 
     static float audio_buf[512 * 2];
     static uint audio_buf_pos = 0;
@@ -162,6 +189,7 @@ void __not_in_flash_func(audio_loop)() {
     // const float audio_gain = mute[0] ? 0.0f : powf(10.0f, get_config().speaker_volume / 20.0f);
     const float haptics_gain = get_config().haptics_gain;
     const uint8_t auto_mode = get_config().auto_haptics_enable;
+    const uint8_t aa_mode = get_config().haptics_aa; // native-haptics smoothing (1=off,2=light,3=strong)
     // Speaker-data mute: silence the speaker AUDIO CONTENT (not the volume) when
     // Windows mutes, or via auto-mute. Zeroing the speaker buffer leaves
     // VolumeSpeaker untouched, so the controller still scales HAPTICS normally
@@ -395,6 +423,31 @@ void __not_in_flash_func(audio_loop)() {
                 h_r = m_r / (1.0f + (m_r < 0.0f ? -m_r : m_r));
             }
         }
+        // Anti-aliasing for the 48k->3k haptic decimation below (CONFIGURABLE —
+        // portal "Native Haptics" section). The unfiltered 16x decimation folds
+        // content above 1.5 kHz back as gritty noise; filtering removes the grit
+        // but also softens transient snap, so the strength is a preference:
+        //   1 = off    — raw pre-1.0.4 texture (gritty but sharp)
+        //   2 = light  — single pole ~2.4 kHz: kills most fold-back, keeps snap
+        //   3 = strong — two poles ~1.3 kHz: maximum smoothness (can feel muted)
+        if (aa_mode >= 2) {
+            static float aa1_l = 0.0f, aa1_r = 0.0f, aa2_l = 0.0f, aa2_r = 0.0f;
+            if (aa_mode == 2) {
+                constexpr float A = 0.27f;   // ~2.4 kHz @ 48 kHz
+                aa1_l += A * (h_l - aa1_l);
+                aa1_r += A * (h_r - aa1_r);
+                h_l = aa1_l;
+                h_r = aa1_r;
+            } else {
+                constexpr float A = 0.157f;  // ~1.3 kHz @ 48 kHz
+                aa1_l += A * (h_l - aa1_l);
+                aa1_r += A * (h_r - aa1_r);
+                aa2_l += A * (aa1_l - aa2_l);
+                aa2_r += A * (aa1_r - aa2_r);
+                h_l = aa2_l;
+                h_r = aa2_r;
+            }
+        }
         in_buf[i * 2]     = static_cast<WDL_ResampleSample>(clamp(h_l, -1.0f, 1.0f));
         in_buf[i * 2 + 1] = static_cast<WDL_ResampleSample>(clamp(h_r, -1.0f, 1.0f));
     }
@@ -474,7 +527,11 @@ void audio_init() {
     queue_init(&mic_fifo, sizeof(mic_element), 2);
     queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
 #if !DISABLE_SPEAKER_PROC
-    queue_init(&audio_fifo, sizeof(audio_raw_element), 1);
+    // Depth 2 (upstream change): with a 1-deep queue, any scheduling slip between
+    // core0 (producer) and core1 (speaker_proc) dropped a whole 10.67 ms block via
+    // the full->remove-oldest branch — an audible/tactile discontinuity. One frame
+    // of slack absorbs the cross-core variance.
+    queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
     critical_section_init(&opus_cs);
     multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
 #endif

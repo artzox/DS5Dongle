@@ -44,6 +44,25 @@ struct __attribute__((packed)) Config_body {
     uint8_t effect_leak_decay; // [0-100] fade-out length after a transient; higher=longer/more gradual tail
     uint8_t effect_leak_attack; // [0-100] gate open speed; higher=more immediate (less delay)
     uint16_t effect_leak_output_hp_hz; // output high-pass cutoff (Hz) — protects speaker from low-freq popping
+    // Rumble-to-trigger: express the game's rumble as trigger Vibration (effect 0x26).
+    uint8_t r2t_mode;       // 0=off, 1=left trigger only, 2=right trigger only, 3=both
+    uint8_t r2t_on_press;   // bool: 0=vibrate regardless of trigger position, 1=only when trigger pressed
+    uint8_t r2t_strength;   // [0-100] amplitude multiplier applied to the rumble value
+    uint8_t r2t_frequency;  // vibration frequency parameter for the 0x26 effect [1-255], ~tactile buzz
+    // Adaptive triggers Stage 1: L2-gated R2 resistance. When L2 is pressed past the
+    // threshold (aiming), R2 gets a constant resistance (Feedback effect 0x21).
+    uint8_t at_mode;        // 0=off, 1=L2 gates R2 resistance
+    uint8_t at_strength;    // [0-100] resistance intensity (mapped to 0-8 effect strength)
+    uint8_t at_threshold;   // [0-255] how far L2 must be pressed to arm R2 resistance
+    uint8_t at_start_pos;   // [0-9] trigger position where R2 resistance begins
+    // Gyro -> right-stick aiming: adds controller angular velocity onto the right
+    // stick in the input report, so ANY game gets gyro aim with no PC software.
+    uint8_t gyro_mode;      // 0=off, 1=L2-held, 2=always, 3=touchpad-touch enables, 4=always but touch pauses (ratchet)
+    uint8_t gyro_sens;      // [1-100] sensitivity (50 = raw/40 per report)
+    uint8_t gyro_axis;      // horizontal source: 0=yaw (turn), 1=roll (tilt sideways)
+    uint8_t gyro_invert;    // bit0 = invert X, bit1 = invert Y
+    uint8_t haptics_aa;     // native-haptics smoothing: 1=off (raw/gritty), 2=light 1-pole ~2.4kHz (default), 3=strong 2-pole ~1.3kHz
+    uint8_t synth_force;    // 0=yield to game trigger effects (default), 1=force r2t/at even if a game/app sends effects
 };
 
 struct __attribute__((packed)) Config {

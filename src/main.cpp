@@ -87,6 +87,59 @@ void __not_in_flash_func(interrupt_loop)() {
     }
 }
 
+// --- Gyro -> right-stick aiming ---------------------------------------------
+// Adds the controller's angular velocity onto the right stick in the input
+// report the PC sees, so ANY game gets gyro aiming with zero PC software
+// (DSX needs its app running for this; here it lives in the dongle).
+// Integer-only so it is safe inside the report critical section.
+// Report offsets: RightStickX=2, RightStickY=3, TriggerLeft=4,
+// AngularVelocityX(pitch)=15, Z(roll)=17, Y(yaw)=19 (int16 LE).
+volatile uint16_t g_diag_gyro = 0; // |horizontal gyro raw|, field 0x35
+
+static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
+    const auto &cfg = get_config();
+    if (cfg.gyro_mode == 0) return;
+    // Activation schemes (industry set: ADS-gated, always-on, touch-enable, ratchet):
+    //   1 = only while L2 (aim) held past ~12%
+    //   2 = always on
+    //   3 = only while the touchpad is touched (Steam 'touch to enable' style)
+    //   4 = always on, touching the touchpad PAUSES gyro (ratchet: re-center like
+    //       lifting a mouse)
+    const bool touch = !(d[32] & 0x80);            // touchpad finger 1 down
+    if (cfg.gyro_mode == 1 && d[4] < 30) return;
+    if (cfg.gyro_mode == 3 && !touch)    return;
+    if (cfg.gyro_mode == 4 && touch)     return;
+    auto rd16 = [&](int off) -> int32_t {
+        return (int16_t)((uint16_t)d[off] | ((uint16_t)d[off + 1] << 8));
+    };
+    int32_t pitch = rd16(15);
+    // Hardware-verified axis mapping (v1.0.6): on the DualSense the horizontal
+    // "turn the controller" motion shows up on the int16 at byte 17, NOT byte 19
+    // as the wiki field names suggested — user testing showed 19 gives no
+    // horizontal response while 17 tracks turning. So: yaw = 17, roll = 19.
+    int32_t horiz = (cfg.gyro_axis == 1) ? rd16(19) /* roll */ : rd16(17) /* yaw */;
+    // Live diagnostic (portal): |horiz| raw magnitude, pre-deadzone, whenever gyro
+    // is enabled — lets sensitivity be calibrated against real numbers.
+    { extern volatile uint16_t g_diag_gyro;
+      int32_t ah = horiz < 0 ? -horiz : horiz;
+      g_diag_gyro = (ah > 65535) ? 65535 : (uint16_t)ah; }
+    // Small deadzone against sensor noise/bias at rest.
+    if (horiz > -12 && horiz < 12) horiz = 0;
+    if (pitch > -12 && pitch < 12) pitch = 0;
+    if (horiz == 0 && pitch == 0) return;
+    // Scale: sens 1-100, divisor 200 (v1.0.6: 10x more range after "100 felt too
+    // low" on hardware — the old maximum now sits around slider value 10).
+    const int32_t s = cfg.gyro_sens;
+    int32_t dx = -horiz * s / 200;    // turn controller right -> aim right
+    int32_t dy = -pitch * s / 200;    // tilt up -> aim up (flip via invert if wrong)
+    if (cfg.gyro_invert & 1) dx = -dx;
+    if (cfg.gyro_invert & 2) dy = -dy;
+    int32_t rx = (int32_t)d[2] + dx;
+    int32_t ry = (int32_t)d[3] + dy;
+    d[2] = (uint8_t)(rx < 0 ? 0 : (rx > 255 ? 255 : rx));
+    d[3] = (uint8_t)(ry < 0 ? 0 : (ry > 255 ? 255 : ry));
+}
+
 void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
     // printf("[Main] BT data callback: channel=%u len=%u\n", channel, len);
     if (channel == INTERRUPT && len > 2 && data[1] == 0x31) {
@@ -113,6 +166,8 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
 
         if (get_config().polling_rate_mode != 2) {
             memcpy(interrupt_in_data, data + 3, 63);
+            apply_gyro_stick(interrupt_in_data);
+            { extern volatile uint8_t g_l2_pos, g_r2_pos; g_l2_pos = interrupt_in_data[4]; g_r2_pos = interrupt_in_data[5]; } // L2@4, R2@5
 #if ENABLE_BATT_LED
             battery_led_note_report();
 #endif
@@ -127,8 +182,10 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
         //  and needs to be sent in the next interrupt report.
         critical_section_enter_blocking(&report_cs);
         memcpy(interrupt_in_data, data + 3, 63);
+        apply_gyro_stick(interrupt_in_data);
         report_dirty = true;
         critical_section_exit(&report_cs);
+        { extern volatile uint8_t g_l2_pos, g_r2_pos; g_l2_pos = data[3 + 4]; g_r2_pos = data[3 + 5]; } // L2@4, R2@5
 #if ENABLE_BATT_LED
         battery_led_note_report();
 #endif
@@ -276,6 +333,17 @@ int main() {
     }
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
 
+    // SMPS coil-whine fix: at light load the on-board buck regulator drops into PFM
+    // (power-save) mode, and its pulse-skipping repetition rate falls into the
+    // audible band -> the board whines at idle. Driving the CYW43 SMPS power-save
+    // control pin (WL_GPIO1 on the Pico 2 W / Pico W) HIGH forces continuous PWM,
+    // which has lower 3V3 ripple at light load and silences the whine. No-op on
+    // boards without the pin. (From awalol PR #207, independent of Wake-on-LAN.)
+#ifndef CYW43_WL_GPIO_SMPS_PIN
+#define CYW43_WL_GPIO_SMPS_PIN 1   // WL_GPIO1 on Pico W / Pico 2 W
+#endif
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_SMPS_PIN, true);
+
 #if ENABLE_BATT_LED
     battery_led_init();
 #endif
@@ -316,6 +384,7 @@ int main() {
     while (1) {
 #if !ENABLE_SERIAL
         watchdog_update();
+        synth_watchdog();
 #endif
         cyw43_arch_poll();
         tud_task();
