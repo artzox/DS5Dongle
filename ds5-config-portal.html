@@ -139,6 +139,9 @@ const SECTIONS = [
     [0x2c,'at_strength','u8','Resistance strength','number',[0,100]],
     [0x2d,'at_threshold','u8','L2 press threshold to arm','number',[1,255]],
     [0x2e,'at_start_pos','u8','R2 resistance start position','number',[0,9]],
+    [0x39,'at_pushback','u8','Push-back kick (recoil) strength','number',[0,100]],
+    [0x3a,'at_pushback_src','u8','Kick follows','select',{0:'Rumble only',1:'Audio haptics only',2:'Rumble + audio (strongest)'}],
+    [0x3b,'at_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
   ]},
   { title: 'Gyro Aiming (experimental)', fields: [
     [0x2f,'gyro_mode','u8','Mode','select',{0:'Off',1:'Only while L2 (aim) held',2:'Always on',3:'Only while touchpad touched',4:'Always on — touch touchpad to pause (ratchet)'}],
@@ -520,8 +523,10 @@ async function readDiag(){
     let gy = null, sy = null, c01 = null, c23 = null;
     try { gy = await readField(0x35, 'u16'); sy = await readField(0x36, 'u8'); } catch(e) {}
     try { c01 = await readField(0x37, 'u16'); c23 = await readField(0x38, 'u16'); } catch(e) {}
-    return {br, ch, rssi, gy, sy, c01, c23};
-  } catch(e){ return {br:'err', ch:'err', rssi:null, gy:null, sy:null, c01:null, c23:null}; }
+    let ke = null;
+    try { ke = await readField(0x3c, 'u8'); } catch(e) {}
+    return {br, ch, rssi, gy, sy, c01, c23, ke};
+  } catch(e){ return {br:'err', ch:'err', rssi:null, gy:null, sy:null, c01:null, c23:null, ke:null}; }
 }
 function rssiLabel(r){
   if (r === null || r === undefined) return 'n/a';
@@ -553,7 +558,10 @@ async function refreshDiag(){
       if (d.sy & 4)  f.push('synth-L2');
       if (d.sy & 8)  f.push('synth-R2');
       if (d.sy & 16) f.push('AT-engaged');
+      if (d.sy & 32) f.push('KICK');
       extra += `<br>Trigger synthesis: ${f.length ? f.join(' · ') : 'idle'}  (game-owns = your r2t/at yield; use Force override to take over)`;
+      if (d.ke !== null && d.ke !== undefined)
+        extra += `<br>Push-back envelope: ${d.ke}/255  (must rise with rumble/gunfire while AT-engaged; kick fires at >=32 - if this stays 0 during rumble, the selected source isn't producing signal)`;
     }
     el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}${extra}`;
   }
@@ -563,7 +571,7 @@ setInterval(()=>{ if(!saving && device && device.opened && document.getElementBy
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.0.10</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.1.0</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
