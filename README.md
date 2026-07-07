@@ -37,10 +37,13 @@ to RAM so native fine haptics and controller audio work without overclocking.
   tactile buzz, per trigger, with an "only while pressed" option, strength, and
   frequency. Useful for feeling rumble through the triggers in games that only
   send classic rumble.
-- **Adaptive triggers (Stage 1)** — L2-gated constant resistance on R2: hold the
-  aim trigger and R2 stiffens, for a light adaptive-trigger effect in games that
-  don't drive the triggers themselves. Configurable strength, arm threshold, and
-  start position; also available always-on.
+- **Adaptive triggers (Stages 1 + 2)** — L2-gated constant resistance on R2: hold
+  the aim trigger and R2 stiffens, for a light adaptive-trigger effect in games
+  that don't drive the triggers themselves. Configurable strength, arm threshold,
+  and start position; also available always-on. Stage 2 adds a **push-back kick
+  (recoil)**: while resistance is engaged, rumble/haptics bursts fire a
+  low-frequency vibration thump on R2 — each shot knocks the trigger back against
+  your finger, then resistance resumes.
 - **Gyro-to-stick aiming** — maps controller motion onto the right stick for
   motion aiming, with selectable activation (always / while L2 held / touchpad
   touch / ratchet), sensitivity, horizontal axis source (yaw or roll), and
@@ -217,8 +220,12 @@ rumble in your triggers only when you're using them" effect. With **off**, the
 triggers buzz continuously whenever the game sends rumble. If a game drives its own
 trigger effects, R2T yields to it by default (see *Force Override* below).
 
-### Adaptive Triggers (Stage 1)
-L2-gated constant resistance on R2 — hold the aim trigger and R2 stiffens.
+### Adaptive Triggers (Stage 1: resistance, Stage 2: push-back kick)
+L2-gated constant resistance on R2 — hold the aim trigger and R2 stiffens. On top
+of that, the push-back kick delivers recoil: while resistance is engaged, each
+rumble/haptics burst momentarily switches R2 to a low-frequency vibration thump
+that knocks the trigger back against your finger, then resistance resumes as the
+burst fades (hysteresis prevents chatter at the threshold).
 
 | Setting | Range | Default | Notes |
 |---|---|---|---|
@@ -226,11 +233,20 @@ L2-gated constant resistance on R2 — hold the aim trigger and R2 stiffens.
 | Strength | 0–100 | 70 | Resistance intensity (mapped to the effect's 0–7 range) |
 | Arm Threshold | 1–255 | 30 | How far L2 must be pulled to arm R2 resistance (~12% at default) |
 | Start Position | 0–9 | 0 | Trigger-travel zone where resistance begins (0 = from the start) |
+| Push-back kick strength | 0–100 | 0 (off) | Recoil intensity; scales the thump amplitude with the vibration envelope. 0 keeps pure Stage 1 behavior |
+| Kick follows | Rumble / Audio / Both | Both | Envelope source: game rumble (incl. converted DS4Windows rumble), the auto-haptics audio envelope, or the strongest of the two |
+| Kick thump frequency | 10–200 | 35 | Vibration frequency of the kick; lower = heavier knock, higher = buzzier (R2T's default buzz is 60 for comparison) |
 
 *Guide:* **L2-gated** gives a shooter-style "aim to feel the trigger tension"
 effect without needing native adaptive-trigger support. Resistance wins over R2T
 vibration while engaged, so you can run **R2T Both + AT L2-gated** together: the
-triggers buzz with rumble normally, and R2 stiffens the moment you aim.
+triggers buzz with rumble normally, and R2 stiffens the moment you aim. For
+recoil, start around **kick 60–80, frequency 35, source Both**: aim, fire, and
+each shot thumps R2. *Audio* as a source means even games with zero rumble kick
+on gunfire via the auto-haptics envelope. The diagnostics box shows the live
+**push-back envelope (0–255)** and a **KICK** flag — the kick fires at envelope
+≥ 32, so if the number stays 0 while the game rumbles, the selected source isn't
+producing signal.
 
 ### Gyro-to-Stick
 Maps controller motion onto the right stick for motion aiming.

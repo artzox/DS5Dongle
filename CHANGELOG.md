@@ -4,8 +4,9 @@ All notable changes to this project are documented here.
 
 ## [1.1.0] — 2026-07-07
 
-Portal/automation release — no firmware changes. Profile auto-apply is now
-robust with the wake feature enabled and fully hands-off.
+Adaptive triggers gain a push-back recoil kick (firmware), and profile
+auto-apply is now robust with the wake feature enabled and fully hands-off
+(portal + automation).
 
 ### Fixed
 - **Wake broke profile auto-apply.** Enabling *Wake PC on PS Button* adds a
@@ -25,6 +26,16 @@ robust with the wake feature enabled and fully hands-off.
   now reconnect automatically instead of killing haptics until the next launch.
 
 ### Added
+- **Adaptive triggers Stage 2 — push-back kick (recoil).** While Stage 1
+  resistance is engaged, the vibration envelope fires a low-frequency vibration
+  burst on R2: each rumble/haptics burst knocks the trigger back against the
+  finger, then resistance resumes as it fades (hysteresis at envelope 32/16 plus
+  a 45 ms minimum burst prevents mode chatter). New settings: kick strength
+  (0–100, 0 = off and byte-identical Stage 1 behavior), envelope source (rumble /
+  audio haptics / both — "both" means even rumble-less games kick on gunfire),
+  and thump frequency (default 35; lower = heavier). New config fields 0x39–0x3b;
+  live envelope + KICK flag added to the portal diagnostics (diag 0x3c). FW
+  version reads 1.1.0.
 - **Policy-based WebHID grant (`ds5-policy.bat` / `ds5-policy-remove.bat`).**
   Pre-grants the dongle to the profile pages via the Chromium
   `WebHidAllowDevicesForUrls` policy: no Connect click, immune to browser
