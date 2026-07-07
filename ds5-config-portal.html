@@ -38,6 +38,49 @@
 <div class="toast" id="toast"></div>
 <script>
 const SONY_VID = 0x054C, DS5_PID = 0x0CE6, DSE_PID = 0x0DF2;
+// The dongle can expose EXTRA HID interfaces with the same VID/PID: enabling
+// Wake (or the PS shortcut) adds a boot-keyboard interface for the wake key.
+// WebHID lists every interface as its own HIDDevice, and feature reports only
+// work on the GAMEPAD interface (top-level collection Generic Desktop/Game Pad
+// or the vendor-defined pages) - sending to the keyboard interface fails, which
+// broke profile auto-apply whenever Wake was on. Always select by collection,
+// never by VID/PID alone.
+function isWakeKeyboardIface(d){
+  // The wake feature adds a boot-keyboard HID interface with the same VID/PID.
+  // Only treat a device as that keyboard when it is UNAMBIGUOUSLY one (every
+  // top-level collection is Generic Desktop / Keyboard). Anything uncertain is
+  // kept - selection must never be stricter than the plain VID/PID matching
+  // that has always worked.
+  const cols = (d && d.collections) || [];
+  return cols.length > 0 && cols.every(c => c.usagePage === 0x01 && c.usage === 0x06);
+}
+function pickDs5(list){
+  const m = (list || []).filter(x => x && x.vendorId === SONY_VID
+                                  && (x.productId === DS5_PID || x.productId === DSE_PID));
+  return m.find(x => !isWakeKeyboardIface(x)) || m[0] || null;
+}
+
+// Unthrottled sleep. Chromium throttles main-thread timers on hidden/minimized
+// pages to >=1 per second, which would turn the many short waits between HID
+// reads into minutes when the automation opens this page minimized. Web Workers
+// are exempt from that throttling, so delays keep full speed even when hidden.
+const _sleepWorker = (() => {
+  try {
+    const src = 'onmessage=(e)=>{setTimeout(()=>postMessage(e.data),e.data.ms)}';
+    return new Worker(URL.createObjectURL(new Blob([src], {type:'text/javascript'})));
+  } catch (_) { return null; } // fallback below keeps old behavior
+})();
+let _sleepSeq = 0;
+const _sleepWaiters = new Map();
+if (_sleepWorker) _sleepWorker.onmessage = (e) => {
+  const w = _sleepWaiters.get(e.data.id);
+  if (w) { _sleepWaiters.delete(e.data.id); w(); }
+};
+function sleep(ms){
+  if (!_sleepWorker) return new Promise(r => setTimeout(r, ms));
+  return new Promise(r => { const id = ++_sleepSeq; _sleepWaiters.set(id, r); _sleepWorker.postMessage({id, ms}); });
+}
+
 const SET_REPORT = 0x80, GET_REPORT = 0x81;
 
 // Field definitions: [field_id, key, type('u8'|'u16'|'f32'), label, kind, opts]
@@ -138,13 +181,14 @@ if (navigator.hid && navigator.hid.addEventListener) {
       const d = e.device;
       if (!d || d.vendorId !== SONY_VID) return;
       if (d.productId !== DS5_PID && d.productId !== DSE_PID) return;
+      if (isWakeKeyboardIface(d)) return;
       // Only auto-recover if we don't already hold a live handle.
       if (device && device.opened) return;
       device = d;
       if (!device.opened) await device.open();
       // Give the firmware a moment to (re)populate its feature data after connect,
       // then re-read so the UI reflects real values rather than 0s.
-      await new Promise(r => setTimeout(r, 400));
+      await sleep(400);
       if (typeof readAll === 'function') { await readAll(); }
       if (typeof render === 'function') { render(); }
     } catch (_) { /* leave handle; user can click Connect */ }
@@ -161,7 +205,7 @@ async function connect(){
     const filters=[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}];
     const devices=await navigator.hid.requestDevice({filters});
     if(!devices.length) return;
-    device=devices[0];
+    device=pickDs5(devices) || devices[0];
     if(!device.opened) await device.open();
     await readAll();
     savedSnapshot = {...config}; // baseline for change detection on save
@@ -199,18 +243,18 @@ async function readField(fieldId, type){
   // re-read, when one field's value was read into another's slot).
   for (let tryN = 0; tryN < 4; tryN++){
     await sendCmd(0x04, [fieldId]);
-    await new Promise(r => setTimeout(r, 25));
+    await sleep(25);
     const data = await device.receiveFeatureReport(GET_REPORT);
     const raw = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     let m = -1;
     for (let k = 0; k < Math.min(4, raw.length); k++){
       if (raw[k] === 0x66 && raw[k+1] === 0x04){ m = k; break; }
     }
-    if (m < 0){ await new Promise(r => setTimeout(r, 15)); continue; }
+    if (m < 0){ await sleep(15); continue; }
     const respField = raw[m + 2];
     if (respField !== fieldId){
       // Stale response for a different field — wait and retry.
-      await new Promise(r => setTimeout(r, 15));
+      await sleep(15);
       continue;
     }
     const base = m + 3; // skip 0x66, 0x04, field_id -> value
@@ -240,7 +284,7 @@ async function readAll(){
   // If a lot of reads failed, the device was likely not ready yet — settle and
   // retry once so the refresh doesn't leave stale/zero values.
   if (failures > FIELDS.length / 3){
-    await new Promise(r => setTimeout(r, 400));
+    await sleep(400);
     let ok = true;
     for (const [fid,key,type] of FIELDS){
       try { fresh[key] = await readField(fid, type); }
@@ -275,14 +319,14 @@ async function reacquire(){
   for (let i = 0; i < 10; i++){
     try {
       const devs = await navigator.hid.getDevices();
-      const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+      const d = pickDs5(devs);
       if (d){
         device = d;
         if (!device.opened) await device.open();
         return true;
       }
     } catch(e){}
-    await new Promise(r => setTimeout(r, 250));
+    await sleep(250);
   }
   return false;
 }
@@ -438,18 +482,18 @@ async function saveAll(){
     // NOT separately close/open the WebHID handle (that would cause a SECOND
     // visible reconnect); instead we let the firmware reconnect, then re-acquire
     // the handle that the OS presents after re-enumeration.
-    await new Promise(r => setTimeout(r, 300)); // let flash write finish
+    await sleep(300); // let flash write finish
     try { await sendCmd(0x03); } catch(e){ /* device drops here, expected */ }
     device = null; // drop our reference; the re-enumerated device is a new handle
     for (let attempt = 0; attempt < 12; attempt++){
-      await new Promise(r => setTimeout(r, 500));
+      await sleep(500);
       try {
         const devs = await navigator.hid.getDevices();
-        const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+        const d = pickDs5(devs);
         if (d){
           device = d;
           if (!device.opened) await device.open();
-          await new Promise(r => setTimeout(r, 350));
+          await sleep(350);
           await readAll();
           savedSnapshot = {...config};
           render();
@@ -519,7 +563,7 @@ setInterval(()=>{ if(!saving && device && device.opened && document.getElementBy
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">POC</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.0.10</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
@@ -612,12 +656,12 @@ async function autoApply(){
       banner.textContent = 'Auto-apply: connecting…';
       banner.style.background = '#1e293b';
       let devs = await navigator.hid.getDevices();
-      let d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
+      let d = pickDs5(devs);
       // If not already granted, a gesture lets us prompt the picker directly.
       if (!d && viaGesture){
         const picked = await navigator.hid.requestDevice({ filters: [
           {vendorId:SONY_VID, productId:DS5_PID}, {vendorId:SONY_VID, productId:DSE_PID} ]});
-        d = picked && picked[0];
+        d = picked && (pickDs5(picked) || picked[0]);
       }
       if (!d){
         showConnectButton('No granted device yet — click to connect and apply.');
@@ -625,7 +669,7 @@ async function autoApply(){
       }
       device = d;
       if (!device.opened) await device.open();
-      await new Promise(r=>setTimeout(r,300));
+      await sleep(300);
       await readAll();
 
       const settings = (json && typeof json.settings==='object') ? json.settings : json;
@@ -640,6 +684,14 @@ async function autoApply(){
         await saveAll();
         banner.textContent = `"${profileName||'profile'}" saved to device ✓`;
         banner.style.background = '#14532d';
+        // AUTOCLOSE: applied OK - close this tab so profile pages don't pile up.
+        // A tab opened by the automation has a single history entry, which makes
+        // it script-closable. Gated to embedded profiles (or ?autoclose=1) so the
+        // master portal / manual use never closes itself; failure paths keep the
+        // page open so errors stay visible.
+        if (EMBEDDED_PROFILE || params.get('autoclose')==='1'){
+          setTimeout(()=>{ try { window.close(); } catch(_){} }, 1200);
+        }
       } else {
         banner.textContent += ' — click Save to Device to apply.';
       }
@@ -650,6 +702,9 @@ async function autoApply(){
   }
 
   function showConnectButton(msg){
+    // Surface the wait in the taskbar: the automation opens this window
+    // minimized, so a silent "click to connect" state would be invisible.
+    document.title = 'CONNECT NEEDED - DS5 Bridge Config';
     banner.style.background = '#7c2d12';
     banner.innerHTML = '';
     const span = document.createElement('span'); span.textContent = msg + '  ';
