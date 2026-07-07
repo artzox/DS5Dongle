@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [1.0.10] — 2026-07-07
+## [1.1.0] — 2026-07-07
 
 Portal/automation release — no firmware changes. Profile auto-apply is now
 robust with the wake feature enabled and fully hands-off.
