@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.0.9**
+**Version 1.0.10**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -57,17 +57,22 @@ release the controller disconnects cleanly from the host (and DS4Windows) whenev
 the PC is awake, even with wake enabled — the device only stays on the USB bus while
 the PC is actually asleep (where wake needs it).
 
-> **Important — leave wake OFF for gaming.** Enabling wake changes the controller's
-> USB descriptor (it advertises USB 2.1 with a BOS descriptor and adds a keyboard
-> interface, which the wake mechanism requires). That altered descriptor no longer
-> looks like a "pure" DualSense, so Steam Input can stop recognizing it — games such
-> as *Ratchet & Clank* may fall back to Xbox-style rumble instead of native DualSense
-> haptics, and the controller's speaker audio can stop working. This is a fundamental
-> trade-off, not a bug: wake **needs** the descriptor change, and that change is what
-> Steam Input reacts to. Keep wake **off** for games that rely on native haptics; if
-> you want PS-button wake at the desktop, use a per-game profile that turns wake off
-> when a game launches (the optional Playnite automation in `automation/` does this
-> by switching profiles per game).
+> **Important — leave wake OFF.** Enabling wake changes the controller's USB
+> descriptor (it advertises USB 2.1 with a BOS descriptor and adds a keyboard
+> interface, which the wake mechanism requires). This has two consequences:
+>
+> 1. The altered descriptor no longer looks like a "pure" DualSense, so Steam Input
+>    can stop recognizing it — games such as *Ratchet & Clank* may fall back to
+>    Xbox-style rumble instead of native DualSense haptics, and the controller's
+>    speaker audio can stop working.
+> 2. Because enabling/disabling wake forces a USB re-enumeration, it disrupts the
+>    portal's live connection — the auto-apply profiles (and config saves) can fail
+>    when wake is toggled as part of a profile.
+>
+> These are fundamental to how wake works, not bugs. **Recommendation: pick wake on
+> or off once and leave it there.** If you rely on native haptics or the auto-apply
+> profiles, keep wake **off**. Switching wake per-game via a profile is *not*
+> reliable because of consequence #2, so the automation does not attempt it.
 
 ---
 
@@ -345,10 +350,11 @@ is high-passed to protect the small speaker from low-frequency popping.
   Steam Input may treat it as a generic/XInput pad: games like *Ratchet & Clank* can
   revert to Xbox-style rumble instead of native DualSense haptics, and speaker audio
   may stop. There is no way to keep wake's descriptor changes *and* the exact
-  DualSense fingerprint Steam Input wants — they conflict by design. Recommended:
-  keep wake **off** for native-haptics games. If you want wake at the desktop, apply
-  a wake-off profile on game launch (a re-enumeration applies the new descriptor);
-  the optional Playnite automation does this automatically per game.
+  DualSense fingerprint Steam Input wants — they conflict by design. Additionally,
+  toggling wake forces a USB re-enumeration that disrupts the portal connection, so
+  applying a wake change through an auto-apply profile is unreliable. **Recommended:
+  choose wake on or off once and leave it — don't switch it per-game.** If you rely
+  on native haptics or the auto-apply profiles, keep wake **off**.
 - **Hub-induced suspends.** A brief USB suspend caused by a flaky hub (while the host
   is awake) no longer powers off the controller. The power-off is debounced so only a
   sustained suspend — a real sleep or shutdown — powers the controller off; transient
@@ -447,10 +453,15 @@ Quick start:
 2. Run `automation\ds5-setup.bat` — it detects its own folder and generates the
    Playnite scripts with correct paths, then prints the exact lines to paste into
    Playnite's script settings.
-3. To fill in your native-haptics game list, launch each such game once and copy
+3. Run `automation\ds5-policy.bat` once (self-elevates). It pre-grants the dongle
+   to the profile pages via browser policy, so automated applies never wait for a
+   Connect click and the grant survives browser restarts. Fully reversible with
+   `ds5-policy-remove.bat` (Edge/Chrome show "Managed by your organization" while
+   the policy is installed).
+4. To fill in your native-haptics game list, launch each such game once and copy
    the exact names from `ds5-automation.log` (each launch logs `game: '...'`) into
    `native-games.txt` — no need to type them from memory.
-4. See `automation\AUTOMATION-README.md` for the full walkthrough.
+5. See `automation\AUTOMATION-README.md` for the full walkthrough.
 
 This is entirely optional — the firmware and config portal work on their own without
 it. The automation just removes the manual steps if you use Playnite.
