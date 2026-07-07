@@ -447,7 +447,7 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.0.9.uf2` — the firmware (flash this)
+- `ds5-v1.1.0.uf2` — the firmware (flash this)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
