@@ -63,6 +63,12 @@ struct __attribute__((packed)) Config_body {
     uint8_t gyro_invert;    // bit0 = invert X, bit1 = invert Y
     uint8_t haptics_aa;     // native-haptics smoothing: 1=off (raw/gritty), 2=light 1-pole ~2.4kHz (default), 3=strong 2-pole ~1.3kHz
     uint8_t synth_force;    // 0=yield to game trigger effects (default), 1=force r2t/at even if a game/app sends effects
+    // Adaptive triggers Stage 2: push-back kick (recoil). While resistance is
+    // engaged, the vibration envelope momentarily raises the resistance strength,
+    // pressing the trigger back against the finger - recoil on top of resistance.
+    uint8_t at_pushback;     // [0-100] kick strength; 0=off (Stage 1 behavior unchanged)
+    uint8_t at_pushback_src; // envelope source: 0=rumble only, 1=audio haptics only, 2=both (max)
+    uint8_t at_pushback_freq;// [10-200] vibration frequency of the kick thump; lower = heavier knock (default 35)
 };
 
 struct __attribute__((packed)) Config {

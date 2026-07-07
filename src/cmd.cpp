@@ -35,8 +35,8 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
-constexpr uint8_t FW_VER_MINOR = 0;
-constexpr uint8_t FW_VER_PATCH = 9;
+constexpr uint8_t FW_VER_MINOR = 1;
+constexpr uint8_t FW_VER_PATCH = 0;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
@@ -185,6 +185,9 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
         case 0x32: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_invert=v; break; }
         case 0x33: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.haptics_aa=v; break; }
         case 0x34: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.synth_force=v; break; }
+        case 0x39: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback=v; break; }
+        case 0x3a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_src=v; break; }
+        case 0x3b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_freq=v; break; }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
             return false;
@@ -266,6 +269,10 @@ static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize
         case 0x32: return write_config_value(buffer, bufsize, config.gyro_invert);
         case 0x33: return write_config_value(buffer, bufsize, config.haptics_aa);
         case 0x34: return write_config_value(buffer, bufsize, config.synth_force);
+        case 0x39: return write_config_value(buffer, bufsize, config.at_pushback);
+        case 0x3a: return write_config_value(buffer, bufsize, config.at_pushback_src);
+        case 0x3b: return write_config_value(buffer, bufsize, config.at_pushback_freq);
+        case 0x3c: { extern volatile uint8_t g_diag_at_env; return write_config_value(buffer, bufsize, (uint8_t)g_diag_at_env); }
         case 0x35: { extern volatile uint16_t g_diag_gyro; return write_config_value(buffer, bufsize, (uint16_t)g_diag_gyro); }
         case 0x36: { extern volatile uint8_t g_diag_synth; return write_config_value(buffer, bufsize, (uint8_t)g_diag_synth); }
         case 0x37: { extern volatile uint16_t g_diag_ch01_peak; return write_config_value(buffer, bufsize, (uint16_t)g_diag_ch01_peak); }

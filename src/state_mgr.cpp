@@ -41,6 +41,7 @@ SetStateData state{};
 // Live synthesis diagnostics, readable via config field 0x36:
 //   bit0 game-owns-L2, bit1 game-owns-R2, bit2 synth-owns-L2, bit3 synth-owns-R2, bit4 at-engaged
 volatile uint8_t g_diag_synth = 0;
+volatile uint8_t g_diag_at_env = 0; // live push-back envelope (0-255), diag field 0x3c
 // Synthesized-trigger bookkeeping (file scope so the staleness watchdog can see it).
 static bool synth_owned_l2 = false, synth_owned_r2 = false, at_engaged = false;
 static uint32_t g_last_state_update_ms = 0;
@@ -228,6 +229,7 @@ bool state_update(const uint8_t *data, const uint8_t size) {
     {
         const auto &cfg = get_config();
 
+        bool at_kick_diag = false; // KICK burst active this cycle (diag bit 32)
         // -- game-ownership recency latch --
         static uint32_t last_game_r2_ms = 0, last_game_l2_ms = 0;
         static bool game_ever_r2 = false, game_ever_l2 = false;
@@ -355,15 +357,65 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         } else if (at_wants_r2) {
             uint8_t *ffb = state.RightTriggerFFB;
             for (int i = 0; i < 11; ++i) ffb[i] = 0;
-            ffb[0] = 0x21; // Feedback (constant resistance)
-            const uint8_t start = (cfg.at_start_pos > 9) ? 0 : cfg.at_start_pos;
-            uint16_t zones = 0;
-            for (int z = start; z <= 9; ++z) zones |= (1u << z);
-            ffb[1] = (uint8_t)(zones & 0xFF);
-            ffb[2] = (uint8_t)((zones >> 8) & 0x03);
-            uint8_t wire = (uint8_t)(((uint16_t)cfg.at_strength * 7u + 50u) / 100u);
-            if (wire > 7) wire = 7;
-            pack_zones(ffb, zones, wire);
+            // -- Stage 2: push-back kick (recoil) --
+            // A static change in Feedback strength is barely perceptible under a
+            // finger that already holds the trigger, so the kick is delivered as
+            // a LOW-FREQUENCY VIBRATION BURST instead: while the vibration
+            // envelope is hot, the R2 slot temporarily switches from Feedback
+            // (resistance) to Vibration (recoil thump) and drops back to
+            // resistance as the burst fades. Hysteresis (on >= 32, off < 16) plus
+            // a 45 ms minimum burst stop mode chatter around the threshold.
+            // at_pushback == 0 leaves Stage 1 byte-identical.
+            bool kick_now = false;
+            if (cfg.at_pushback > 0) {
+                uint16_t env = 0; // vibration envelope, 0-255
+                if (cfg.at_pushback_src == 0 || cfg.at_pushback_src == 2) {
+                    const uint8_t hr = update.EnableRumbleEmulation ? update.RumbleEmulationRight : 0;
+                    const uint8_t hl = update.EnableRumbleEmulation ? update.RumbleEmulationLeft  : 0;
+                    extern volatile uint8_t g_rumble_l, g_rumble_r; // converted-rumble path
+                    const uint8_t g = (g_rumble_l > g_rumble_r) ? g_rumble_l : g_rumble_r;
+                    const uint8_t h = (hr > hl) ? hr : hl;
+                    env = (h > g) ? h : g;
+                }
+                if (cfg.at_pushback_src >= 1) {
+                    extern volatile uint16_t g_diag_ch01_peak; // live auto-haptics input peak (0-32767)
+                    uint16_t a = (uint16_t)(g_diag_ch01_peak >> 7); // -> 0-255
+                    if (a > 255) a = 255;
+                    if (a > env) env = a;
+                }
+                g_diag_at_env = (uint8_t)env;
+                static bool     kick_on = false;
+                static uint32_t kick_hold_until_ms = 0;
+                if (!kick_on && env >= 32) { kick_on = true; kick_hold_until_ms = now_ms + 45; }
+                else if (kick_on && env < 16 && (int32_t)(now_ms - kick_hold_until_ms) >= 0) kick_on = false;
+                if (kick_on) {
+                    uint32_t amp3 = ((uint32_t)env * cfg.at_pushback * 7u + 12750u) / 25500u;
+                    if (amp3 > 7) amp3 = 7;
+                    if (amp3 > 0) {
+                        kick_now = true;
+                        ffb[0] = 0x26;                    // Vibration: the recoil thump
+                        const uint16_t vz = 0x03FF;       // full travel
+                        ffb[1] = (uint8_t)(vz & 0xFF);
+                        ffb[2] = (uint8_t)((vz >> 8) & 0x03);
+                        pack_zones(ffb, vz, (uint8_t)amp3);
+                        ffb[9] = cfg.at_pushback_freq;    // low = heavier knock
+                    }
+                }
+            } else {
+                g_diag_at_env = 0;
+            }
+            if (!kick_now) {
+                ffb[0] = 0x21; // Feedback (constant resistance)
+                const uint8_t start = (cfg.at_start_pos > 9) ? 0 : cfg.at_start_pos;
+                uint16_t zones = 0;
+                for (int z = start; z <= 9; ++z) zones |= (1u << z);
+                ffb[1] = (uint8_t)(zones & 0xFF);
+                ffb[2] = (uint8_t)((zones >> 8) & 0x03);
+                uint8_t wire = (uint8_t)(((uint16_t)cfg.at_strength * 7u + 50u) / 100u);
+                if (wire > 7) wire = 7;
+                pack_zones(ffb, zones, wire);
+            }
+            at_kick_diag = kick_now;
             state.AllowRightTriggerFFB = 1;
             synth_owned_r2 = true;
         } else if (r2t_wants_r2) {
@@ -377,7 +429,7 @@ bool state_update(const uint8_t *data, const uint8_t size) {
 
         g_diag_synth = (uint8_t)((game_owns_l2 ? 1 : 0) | (game_owns_r2 ? 2 : 0) |
                                  (synth_owned_l2 ? 4 : 0) | (synth_owned_r2 ? 8 : 0) |
-                                 (at_engaged ? 16 : 0));
+                                 (at_engaged ? 16 : 0) | (at_kick_diag ? 32 : 0));
     }
 
     copy_if_allowed(

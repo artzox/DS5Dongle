@@ -132,6 +132,9 @@ void config_valid() {
     if (body->effect_leak_attack > 100) body->effect_leak_attack = 50;
     if (body->effect_leak_output_hp_hz < 50 || body->effect_leak_output_hp_hz > 2000) body->effect_leak_output_hp_hz = 200;
     // Rumble-to-trigger defaults (feature OFF by default).
+    if (body->at_pushback > 100) body->at_pushback = 0;     // 0=off (fresh flash 0xFF lands here)
+    if (body->at_pushback_src > 2) body->at_pushback_src = 2;
+    if (body->at_pushback_freq < 10 || body->at_pushback_freq > 200) body->at_pushback_freq = 35; // fresh flash 0xFF lands here
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
