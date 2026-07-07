@@ -90,13 +90,26 @@ native match, which profile applied, the Python interpreters found, and audio
 start/stop. When ds5audio runs silently (pythonw), its own output goes to
 `ds5audio.log` in this folder, so Python-side errors are never lost.
 
-Two generated debug tools:
+### One-time grant via browser policy (recommended)
 
-- `ds5-start-visible.bat` - runs the real start pipeline with nothing hidden:
-  log lines print to the PowerShell window, and ds5audio opens in a console
-  that stays open even if it crashes, so you can read the error.
-- `ds5-test-audio.bat` - runs ds5audio.py directly (no PowerShell layer),
-  after stopping any running instance, and prints the exit code.
+Run `ds5-policy.bat` once (it self-elevates). It installs the Chromium
+`WebHidAllowDevicesForUrls` policy so the dongle is **pre-granted** to the
+profile pages: no Connect click is ever needed, and nothing is lost when the
+browser closes, restarts, or clears site data on exit. Restart the browser
+after installing. Edge/Chrome will show "Managed by your organization" while
+the policy exists; `ds5-policy-remove.bat` undoes it completely.
+
+Without the policy, WebHID grants for the dongle are session-only (the
+DualSense-authentic USB identity reports no serial number, which browsers
+require for permanent grants), so profile pages ask to Connect again after all
+browser windows have been closed. As a manual fallback,
+`ds5-global-start.ps1 -GrantSetup` opens a profile page unminimized for a
+per-session Connect click.
+
+Everything is logged to `ds5-automation.log`. When ds5audio runs silently
+(pythonw), its own output goes to `ds5audio.log` in this folder. For visible
+debugging run `ds5-global-start.ps1 -ShowWindow` (full pipeline, console stays
+open) or `python ds5audio.py --verbose` (audio only).
 
 Common cases:
 
@@ -107,8 +120,8 @@ Common cases:
   logged name and add a distinctive substring of it to the list.
 - Profile didn't apply - confirm you did the one-time portal Connect, and that the
   `.autoapply.html` files are in `profiles\`.
-- Audio silent - run `ds5-test-audio.bat` and watch the captured peak; if it's ~0,
-  set `$AudioArgs = @("--capture-name","PART OF YOUR OUTPUT DEVICE NAME")` in
+- Audio silent - run `python ds5audio.py --verbose` and watch the captured peak;
+  if it's ~0, set `$AudioArgs = @("--capture-name","PART OF YOUR OUTPUT DEVICE NAME")` in
   `ds5-global-start.ps1`.
 - Wrong Python picked (e.g. PyAudioWPatch lives in a different install) - set
   `$PythonExe = "C:\full\path\to\python.exe"` near the top of
