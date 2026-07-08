@@ -121,6 +121,37 @@ function Normalize-Name([string]$s) {
     }
 } else { Log "WARN native list not found: $NativeList" }
 
+# --- Per-game profile override (optional) ---
+# profile-overrides.txt lines:   name fragment = profile-file.html [, audio|noaudio]
+# First matching line wins; the profile file must be in profiles\. The optional
+# audio/noaudio flag forces the capture decision; when omitted, the native list
+# decides as usual. Matching uses the same mojibake-proof fold as native-games.
+$overrideProfile = $null; $overrideAudio = $null
+$OverrideFile = Join-Path $DS5Dir "profile-overrides.txt"
+if (Test-Path -LiteralPath $OverrideFile) {
+    $gof = Normalize-Name $gameName
+    foreach ($line in (Get-Content -LiteralPath $OverrideFile -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+        $t = "$line".Trim()
+        if ($t -eq "" -or $t.StartsWith("#")) { continue }
+        $kv = $t -split "=", 2
+        if ($kv.Count -lt 2) { continue }
+        $frag = $kv[0].Trim()
+        $file = $kv[1].Trim(); $flag = $null
+        $cm = $file -split ",", 2
+        if ($cm.Count -eq 2) { $file = $cm[0].Trim(); $flag = $cm[1].Trim().ToLower() }
+        if (-not $frag -or -not $file) { continue }
+        $fn = Normalize-Name $frag
+        $hit = if ($fn) { $gof.Contains($fn) } else { $gameName -and $gameName.ToLower().Contains($frag.ToLower()) }
+        if ($hit) {
+            $overrideProfile = $file
+            if ($flag -eq "audio" -or $flag -eq "noaudio") { $overrideAudio = $flag }
+            $fl = if ($flag) { " ($flag)" } else { "" }
+            Log "matched override entry: '$frag' -> '$file'$fl"
+            break
+        }
+    }
+}
+
 $global:DS5WasNative = $isNative
 
 $BrowserExe      = "msedge"  # browser for profile pages, launched with --new-window
@@ -248,11 +279,32 @@ if ($GrantSetup) {
     return
 }
 
-if ($isNative) {
-    Apply-Profile $NativeProfile
-    Log "native -> OFF profile, no capture"
-} else {
-    Apply-Profile $AudioProfile
+# --- Decide which profile to apply and whether to run the capture ---
+$profileToApply = $null; $startAudio = $false
+if ($overrideProfile) {
+    $p = Join-Path (Join-Path $DS5Dir "profiles") $overrideProfile
+    if (Test-Path -LiteralPath $p) {
+        $profileToApply = $p
+        if     ($overrideAudio -eq "audio")   { $startAudio = $true }
+        elseif ($overrideAudio -eq "noaudio") { $startAudio = $false }
+        else                                  { $startAudio = -not $isNative }
+        Log "override -> profile '$overrideProfile' (audio: $startAudio)"
+    } else { Log "WARN override profile not found: $p - falling back to defaults" }
+}
+if (-not $profileToApply) {
+    if ($isNative) { $profileToApply = $NativeProfile; $startAudio = $false; Log "native -> OFF profile, no capture" }
+    else           { $profileToApply = $AudioProfile;  $startAudio = $true }
+}
+# Remember whether the mix profile must be restored on exit. The stop script
+# reads this file - it works across separate powershell invocations (the .bat
+# path) and knows about overrides, unlike $global variables or a list recompute.
+try {
+    $stateVal = if ([System.IO.Path]::GetFileName($profileToApply) -ieq [System.IO.Path]::GetFileName($AudioProfile)) { "mix" } else { "restore-mix" }
+    Set-Content -LiteralPath (Join-Path $DS5Dir "ds5-last-start.txt") -Value $stateVal -Encoding ASCII
+} catch { }
+
+Apply-Profile $profileToApply
+if ($startAudio) {
     if (-not (Test-Path -LiteralPath $AudioScript)) {
         Log "WARN audio script not found: $AudioScript"
     } else {
@@ -340,7 +392,19 @@ $LogFile      = Join-Path $DS5Dir "ds5-automation.log"
 function Log($m) { $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"; Add-Content -LiteralPath $LogFile -Value "$ts  [stop]  $m" -Encoding UTF8 }
 
 $wasNative = $false; $decided = $false
-try { if ($null -ne $global:DS5WasNative) { $wasNative = [bool]$global:DS5WasNative; $decided = $true } } catch { }
+# Preferred source: the state file written by the start script. It survives
+# separate powershell invocations (the .bat path) and knows about per-game
+# profile overrides; "restore-mix" means the applied profile was NOT the mix
+# profile, so the mix must be restored now.
+try {
+    $StateFile = Join-Path $DS5Dir "ds5-last-start.txt"
+    if (Test-Path -LiteralPath $StateFile) {
+        $sv = "$((Get-Content -LiteralPath $StateFile -ErrorAction Stop | Select-Object -First 1))".Trim()
+        if     ($sv -eq "restore-mix") { $wasNative = $true;  $decided = $true }
+        elseif ($sv -eq "mix")         { $wasNative = $false; $decided = $true }
+    }
+} catch { }
+try { if (-not $decided -and $null -ne $global:DS5WasNative) { $wasNative = [bool]$global:DS5WasNative; $decided = $true } } catch { }
 if (-not $decided) {
     $gn = $GameName
     if (-not $gn) { try { if ($game -and $game.Name) { $gn = [string]$game.Name } } catch { } }
@@ -591,19 +655,58 @@ if (-not (Test-Path -LiteralPath $nativeList)) {
 # Games listed here use native DualSense haptics (auto-haptics OFF, no ds5audio).
 # Everything NOT listed uses the mix profile + ds5audio capture.
 # Lines starting with # are ignored. Use a unique word to avoid false matches.
-# For accented titles, use the plain-ASCII part before the accent (e.g. "Ragnar"
-# for "God of War Ragnarok") so matching isn't affected by character encoding.
+# Accented titles work as-is (matching is encoding-tolerant), so "Ragnarök"
+# matches even if the name arrives with mangled characters.
 #
-# Examples - replace with your own:
-Ratchet
+# Default list of PC games with native DualSense haptics - adjust to your library:
 Returnal
-Ragnar
-Astro
+God of War Ragnarök
+PRAGMATA
+Indiana Jones and the Great Circle
+Ratchet & Clank: Rift Apart
+Until Dawn
+Alan Wake II: Deluxe Edition
+Days Gone
+DOOM: The Dark Ages
+The Last of Us Part I
+Marvel's Spider-Man 2
+Prince of Persia The Lost Crown
+SILENT HILL 2
 '@
-    Set-Content -LiteralPath $nativeList -Value $tpl -Encoding ASCII
+    Set-Content -LiteralPath $nativeList -Value $tpl -Encoding UTF8
     Write-Host "  wrote native-games.txt (template - edit it with your games)"
 } else {
     Write-Host "  kept existing native-games.txt (not overwritten)"
+}
+
+# ===========================================================================
+# 5. profile-overrides.txt  (only if it doesn't already exist)
+# ===========================================================================
+$ovrList = Join-Path $Base "profile-overrides.txt"
+if (-not (Test-Path -LiteralPath $ovrList)) {
+    $tpl2 = @'
+# DS5 per-game profile overrides - apply a CUSTOM profile for specific games
+# instead of the default audio-mix / native-off pair. One rule per line:
+#
+#   name fragment = profile-file.html [, audio|noaudio]
+#
+# - The fragment matches the Playnite game name (case-insensitive, partial,
+#   accent/encoding tolerant - same rules as native-games.txt).
+# - The profile file must be an exported .autoapply.html placed in profiles\.
+# - Optional flag: ", audio" also runs the ds5audio capture, ", noaudio" skips
+#   it. Without a flag, native-games.txt decides the capture as usual.
+# - First matching line wins. Lines starting with # are ignored.
+# - On game exit the mix profile is restored automatically (unless the custom
+#   profile IS the mix profile).
+#
+# Examples - replace with your own:
+#Cyberpunk = cyberpunk-heavy-triggers.autoapply.html
+#Doom = doom-recoil.autoapply.html, audio
+'@
+    Set-Content -LiteralPath $ovrList -Value $tpl2 -Encoding UTF8
+    Write-Host "  wrote profile-overrides.txt (template - optional)"
+} else {
+    Write-Host "  kept existing profile-overrides.txt (not overwritten)"
 }
 
 # ===========================================================================
@@ -623,9 +726,8 @@ Write-Host ""
 Write-Host "Notes:"
 Write-Host " - Use the .bat calls above with {Name}. If the log shows game: '' on start,"
 Write-Host "   the start script falls back to reading Playnite's own log for the name."
-Write-Host " - In native-games.txt, use a plain-ASCII fragment of the name (matching is"
-Write-Host "   partial). For accented titles use the part before the accent, e.g. 'Ragnar'"
-Write-Host "   for 'God of War Ragnarok'."
+Write-Host " - native-games.txt matching is partial, case-insensitive and encoding-"
+Write-Host "   tolerant; accented titles like 'God of War Ragnarök' work as written."
 Write-Host " - Activity is logged to ds5-automation.log in this folder."
 Write-Host ""
 Read-Host "Press Enter to close"
