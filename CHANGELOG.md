@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here.
 
+## [1.1.2] — 2026-07-08
+
+Profile slots: complete configurations stored on the dongle, switched with one
+atomic command. Firmware reports 1.1.2.
+
+### Added
+- **Profile slots (firmware + portal + automation).** Eight 512-byte slots in a
+  dedicated flash sector, each holding a named full configuration. New HID
+  commands: 0x08 save-current-to-slot, 0x09 activate-slot (reports whether a
+  USB re-enumeration is needed and only then triggers one), 0x0a slot-info.
+  Portal gains a **Profile Slots** panel (save/activate with names); the
+  automation gains `Game = slot N` syntax in `profile-overrides.txt`, served by
+  a generated one-command activator page (`profiles\slot-activate.html`) that
+  self-closes in under a second — game-launch profile switching is now atomic
+  and near-instant instead of a multi-second field-by-field write. Slots are
+  validated on activation, so slots saved by older firmware stay safe.
+- **Portal HID transaction lock.** All command/reply exchanges (slot queries,
+  diagnostics polling, saves) are serialized over the shared reply buffer,
+  with slot replies additionally carrying a pending marker and slot-index echo
+  — concurrent reads can no longer swallow each other's replies (which showed
+  up as slots randomly listed as empty or shuffled).
+
+### Fixed
+- **False "Save failed" reports.** Field writes retry transient errors and
+  report per-field instead of aborting; the flash-save step tolerates the USB
+  stall its own write causes; the final error message now says the truth
+  (settings are usually saved by the time late stages can throw) and points at
+  Re-read for verification.
+- **Slots panel recovers after reconnects.** After a save/activate that
+  re-enumerates the device, the panel retries its probes and self-heals
+  instead of sticking on "Connect to manage slots" until a manual page reload.
+
+### Changed
+- Portal sections **Rumble → Trigger** and **Gyro Aiming** drop their
+  "(experimental)" tag; the adaptive-triggers section is now titled **Stage 2**
+  (resistance + push-back kick). **Advanced — BT Latency** keeps its
+  experimental label.
+
 ## [1.1.1] — 2026-07-08
 
 Automation feature + documentation release — firmware and portal unchanged

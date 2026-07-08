@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.1.1**
+**Version 1.1.2**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -44,6 +44,11 @@ to RAM so native fine haptics and controller audio work without overclocking.
   (recoil)**: while resistance is engaged, rumble/haptics bursts fire a
   low-frequency vibration thump on R2 — each shot knocks the trigger back against
   your finger, then resistance resumes.
+- **Profile slots** — up to 8 complete configurations stored on the dongle
+  itself. Save your setups once in the portal; switching later is a single
+  instant command instead of a full profile write — used by the automation for
+  per-game profiles (`Game = slot 3` in `profile-overrides.txt`), and applied
+  atomically so a game launch can never leave the dongle half-configured.
 - **Gyro-to-stick aiming** — maps controller motion onto the right stick for
   motion aiming, with selectable activation (always / while L2 held / touchpad
   touch / ratchet), sensitivity, horizontal axis source (yaw or roll), and
@@ -83,7 +88,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.1.0.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.1.2.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -447,16 +452,16 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.1.0.uf2` — the firmware (flash this; reports version 1.1.0)
+- `ds5-v1.1.2.uf2` — the firmware (flash this; reports version 1.1.2)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
-- `ds5dongle-v1.0.9-to-v1.1.0.patch` — incremental diff for the 1.1.0 firmware
-  and portal changes (apply on top of the v1.0.9 patch)
+- `ds5dongle-v1.0.9-to-v1.1.2.patch` — incremental diff for the 1.1.0–1.1.2
+  firmware and portal changes (apply on top of the v1.0.9 patch)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.1.1)
+- `README.md` — this file (docs version 1.1.2)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
@@ -479,8 +484,9 @@ Quick start:
 4. To fill in your native-haptics game list, launch each such game once and copy
    the exact names from `ds5-automation.log` (each launch logs `game: '...'`) into
    `native-games.txt` — no need to type them from memory.
-   Per-game custom profiles are supported too: export a profile, drop it into
-   `profiles\`, and add a `game = file.html` rule to `profile-overrides.txt`.
+   Per-game custom profiles are supported too: save a profile into a dongle
+   slot in the portal and add a `game = slot 3` rule to `profile-overrides.txt`
+   (or the file-based form, `game = file.html`, for exported profiles).
 5. See `automation\AUTOMATION-README.md` for the full walkthrough.
 
 This is entirely optional — the firmware and config portal work on their own without
