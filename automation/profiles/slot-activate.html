@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>DS5 Bridge Config - Slot</title>
+<style>body{font-family:system-ui,sans-serif;background:#0f1115;color:#e5e7eb;max-width:560px;margin:60px auto;padding:0 16px}
+#b{padding:14px 16px;border-radius:10px;background:#1f2937;font-size:15px}
+button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:1rem;cursor:pointer;margin-top:12px}</style>
+</head><body><div id="b">Activating profile slot&hellip;</div><div id="a"></div>
+<script>
+const SONY_VID=0x054C, DS5_PID=0x0CE6, DSE_PID=0x0DF2, SET_REPORT=0x80, GET_REPORT=0x81;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function isWakeKeyboardIface(d){const c=(d&&d.collections)||[];return c.length>0&&c.every(x=>x.usagePage===0x01&&x.usage===0x06);}
+function pickDs5(l){const m=(l||[]).filter(x=>x&&x.vendorId===SONY_VID&&(x.productId===DS5_PID||x.productId===DSE_PID));return m.find(x=>!isWakeKeyboardIface(x))||m[0]||null;}
+let device=null;
+async function sendCmd(id,args=[]){const p=new Uint8Array(63);p[0]=0x66;p[1]=id;args.forEach((b,i)=>p[2+i]=b);await device.sendFeatureReport(SET_REPORT,p);}
+async function reply(id,idx,tries=30){for(let t=0;t<tries;t++){await sleep(60);let r=null;
+  try{const d=await device.receiveFeatureReport(GET_REPORT);r=new Uint8Array(d.buffer,d.byteOffset,d.byteLength);}catch(_){continue;} // mid-flash USB stall
+  for(let k=0;k<Math.min(4,r.length);k++){if(r[k]===0x66&&r[k+1]===id){const x=r.slice(k);
+    if(x[2]===0xFE)break;                 // pending marker: keep polling
+    if(idx!==undefined&&x[3]!==idx)break; // stale reply for another slot
+    return x;}}}return null;}
+function fail(msg){document.title='CONNECT NEEDED - DS5 Bridge Config';const b=document.getElementById('b');b.style.background='#7c2d12';b.textContent=msg;
+  document.getElementById('a').innerHTML='<button onclick="run(true)">Connect &amp; Activate</button>';}
+async function run(gesture){
+  const slot=parseInt(new URLSearchParams(location.search).get('slot')||'0',10);
+  const b=document.getElementById('b');
+  if(!(slot>=1&&slot<=8)){b.textContent='Bad or missing ?slot=1..8';return;}
+  try{
+    device=pickDs5(await navigator.hid.getDevices());
+    if(!device&&gesture){const p=await navigator.hid.requestDevice({filters:[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}]});device=pickDs5(p)||(p&&p[0]);}
+    if(!device){fail('No granted device - click to connect and activate slot '+slot+'.');return;}
+    if(!device.opened)await device.open();
+    let r=null;
+    for(let a=0;a<2&&!(r&&r[2]===0x00);a++){ // one silent retry (flash settle)
+      if(a)await sleep(800);
+      await sendCmd(0x09,[slot-1]);
+      r=await reply(0x09,slot-1);
+    }
+    if(!r||r[2]!==0x00){fail('Slot '+slot+' activation failed (empty slot, or firmware older than 1.1.2).');return;}
+    if(r[4]===1){b.textContent='Slot '+slot+' active - device re-enumerating...';try{await sendCmd(0x03);}catch(_){ }}
+    b.style.background='#14532d';b.textContent='Profile slot '+slot+' activated \u2713';
+    document.title='DS5 Bridge Config';
+    setTimeout(()=>{try{window.close();}catch(_){}} ,900); // automation tab: self-close
+  }catch(e){fail('Error: '+e.message);}
+}
+run(false);
+</script></body></html>
