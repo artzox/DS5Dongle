@@ -127,14 +127,14 @@ const SECTIONS = [
   { title: 'Native Haptics', fields: [
     [0x33,'haptics_aa','u8','Smoothing (anti-alias filter)','select',{1:'Off — raw & gritty (pre-1.0.4 texture)',2:'Light — kills grit, keeps snap (recommended)',3:'Strong — maximum smooth (can feel muted)'}],
   ]},
-  { title: 'Rumble → Trigger (experimental)', fields: [
+  { title: 'Rumble → Trigger', fields: [
     [0x27,'r2t_mode','u8','Mode','select',{0:'Off',1:'Left trigger only',2:'Right trigger only',3:'Both triggers'}],
     [0x28,'r2t_on_press','u8','Only vibrate when trigger pressed','bool'],
     [0x29,'r2t_strength','u8','Strength','number',[0,100]],
     [0x2a,'r2t_frequency','u8','Vibration frequency','number',[1,255]],
     [0x34,'synth_force','u8','Force override (ignore game/app trigger effects — applies to r2t AND adaptive triggers)','bool'],
   ]},
-  { title: 'Adaptive Triggers — L2-gated R2 (experimental, Stage 1)', fields: [
+  { title: 'Adaptive Triggers — L2-gated R2 (Stage 2)', fields: [
     [0x2b,'at_mode','u8','Mode','select',{0:'Off',1:'L2 (aim) adds R2 resistance',2:'Always on'}],
     [0x2c,'at_strength','u8','Resistance strength','number',[0,100]],
     [0x2d,'at_threshold','u8','L2 press threshold to arm','number',[1,255]],
@@ -143,7 +143,7 @@ const SECTIONS = [
     [0x3a,'at_pushback_src','u8','Kick follows','select',{0:'Rumble only',1:'Audio haptics only',2:'Rumble + audio (strongest)'}],
     [0x3b,'at_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
   ]},
-  { title: 'Gyro Aiming (experimental)', fields: [
+  { title: 'Gyro Aiming', fields: [
     [0x2f,'gyro_mode','u8','Mode','select',{0:'Off',1:'Only while L2 (aim) held',2:'Always on',3:'Only while touchpad touched',4:'Always on — touch touchpad to pause (ratchet)'}],
     [0x30,'gyro_sens','u8','Sensitivity','number',[1,100]],
     [0x31,'gyro_axis','u8','Horizontal source','select',{0:'Yaw (turn controller)',1:'Roll (tilt sideways)'}],
@@ -235,6 +235,151 @@ async function sendCmd(cmdId, args=[]){
   payload[1] = cmdId;
   args.forEach((b,i) => { payload[2+i] = b; });
   await device.sendFeatureReport(SET_REPORT, payload);
+}
+
+// --- HID transaction lock -------------------------------------------------
+// Every command/reply pair shares the single 0x81 feature-report buffer, so
+// two concurrent transactions (slot refresh vs. diagnostics poll vs. a second
+// refresh triggered by render) can overwrite each other's replies - the loser
+// reads null and a filled slot renders as "empty". Serialize them.
+let _hidLock = Promise.resolve();
+function hidLocked(fn){
+  const run = _hidLock.then(fn, fn);
+  _hidLock = run.catch(()=>{});
+  return run;
+}
+
+// --- Profile slots (fw >= 1.1.2): cmd 0x08 save, 0x09 activate, 0x0a info ---
+async function readCmdReply(cmdId, expectIdx, tries=30){
+  // Robust against three real-world hazards: (1) STALE replies - the 0x81
+  // buffer holds the LAST reply, so we require both the command id AND the
+  // echoed slot index to match, and treat firmware's PENDING marker (status
+  // 0xFE) as "keep waiting"; (2) USB stalls - slot save/activate performs a
+  // flash sector erase with interrupts off, so reads can throw briefly;
+  // (3) slow flash - the window is ~1.8s, not a few hundred ms.
+  for (let t = 0; t < tries; t++){
+    await sleep(60);
+    let raw = null;
+    try {
+      const data = await device.receiveFeatureReport(GET_REPORT);
+      raw = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    } catch(_) { continue; } // mid-flash stall; retry
+    for (let k = 0; k < Math.min(4, raw.length); k++){
+      if (raw[k] === 0x66 && raw[k+1] === cmdId){
+        const r = raw.slice(k);
+        if (r[2] === 0xFE) break;                              // pending: keep polling
+        if (expectIdx !== undefined && r[3] !== expectIdx) break; // stale other-slot reply
+        return r;
+      }
+    }
+  }
+  return null;
+}
+async function slotInfo(idx){
+  await sendCmd(0x0a, [idx]);
+  const r = await readCmdReply(0x0a, idx, 10);
+  if (!r || r[2] !== 0x00) return null; // old firmware or bad slot index
+  const name = new TextDecoder().decode(r.slice(6, 22)).replace(/\0+$/,'').trim();
+  return { valid: r[4] === 1, cfgVersion: r[5], name };
+}
+async function slotSave(idx, name){
+  const bytes = Array.from(new TextEncoder().encode((name||'').slice(0,16)));
+  await sendCmd(0x08, [idx, ...bytes]);
+  const r = await readCmdReply(0x08, idx);
+  return !!(r && r[2] === 0x00);
+}
+async function slotActivate(idx){
+  // One silent retry: activation right after another activation/save can land
+  // while the previous flash write is still settling.
+  for (let attempt = 0; attempt < 2; attempt++){
+    await sendCmd(0x09, [idx]);
+    const r = await readCmdReply(0x09, idx);
+    if (r && r[2] === 0x00) return { needsReenum: r[4] === 1 };
+    await sleep(800);
+  }
+  return null;
+}
+let slotsBusy = false, slotsRerun = false;
+let _slotHealTries = 0;
+async function _refreshSlotsOnce(){
+  const box = document.getElementById('slotbox');
+  if (!box) return;
+  if (!device || !device.opened){
+    box.innerHTML = 'Connect to manage slots.';
+    // Self-heal: after a save/activate reconnect cycle this runs before the
+    // new handle exists; retry shortly instead of staying stuck until a
+    // manual page refresh.
+    if (_slotHealTries++ < 8) setTimeout(() => refreshSlots(), 1500);
+    return;
+  }
+  let rows = '';
+  for (let i = 0; i < 8; i++){
+    let info = await hidLocked(() => slotInfo(i));
+    if (info === null){
+      // Freshly re-enumerated devices can miss the first queries; retry
+      // before drawing conclusions (slot 0 null used to mean "old firmware",
+      // which a transient hiccup turned into a stuck message).
+      for (let a = 0; a < (i === 0 ? 3 : 1) && info === null; a++){
+        await sleep(700);
+        info = await hidLocked(() => slotInfo(i));
+      }
+    }
+    if (info === null && i === 0){
+      box.innerHTML = 'Profile slots need firmware 1.1.2+.';
+      if (_slotHealTries++ < 8) setTimeout(() => refreshSlots(), 1500);
+      return;
+    }
+    const label = info && info.valid ? `<b>${info.name || '(unnamed)'}</b>` : '<span style="color:var(--sub)">empty</span>';
+    rows += `<div style="display:flex;gap:8px;align-items:center;margin:4px 0">
+      <span style="width:52px;color:var(--sub)">Slot ${i+1}</span>
+      <span style="flex:1">${label}</span>
+      <button class="btn btn-outline" style="padding:2px 10px" onclick="uiSlotSave(${i})">Save current</button>
+      <button class="btn btn-outline" style="padding:2px 10px" ${info && info.valid ? '' : 'disabled'} onclick="uiSlotActivate(${i})">Activate</button>
+    </div>`;
+  }
+  const boxNow = document.getElementById('slotbox'); // render() may have replaced the node mid-run
+  if (boxNow) boxNow.innerHTML = rows;
+  _slotHealTries = 0; // full list rendered - reset the self-heal budget
+}
+async function refreshSlots(){
+  // Single-flight: render() and explicit callers can both request a refresh;
+  // overlapping runs interleave their HID queries and lose replies, so a
+  // request during a run just schedules one more pass at the end.
+  if (slotsBusy){ slotsRerun = true; return; }
+  slotsBusy = true;
+  try {
+    do { slotsRerun = false; await _refreshSlotsOnce(); } while (slotsRerun);
+  } finally { slotsBusy = false; }
+}
+async function uiSlotSave(i){
+  try{
+    if (!(await ensureDevice())){ toast('No device \u2014 click Connect', true); return; }
+    const name = prompt(`Name for slot ${i+1} (max 16 chars):`, '');
+    if (name === null) return;
+    saving = true;
+    const ok = await hidLocked(() => slotSave(i, name));
+    toast(ok ? `Saved current settings to slot ${i+1}` : 'Slot save failed', !ok);
+    await refreshSlots();
+  } catch(e){ toast('Slot save failed: ' + e.message, true); }
+  finally { saving = false; }
+}
+async function uiSlotActivate(i){
+  try{
+    if (!(await ensureDevice())){ toast('No device \u2014 click Connect', true); return; }
+    saving = true;
+    const res = await hidLocked(() => slotActivate(i));
+    if (!res){ toast('Slot activate failed', true); return; }
+    if (res.needsReenum){
+      toast(`Slot ${i+1} active \u2014 device re-enumerating\u2026`);
+      try { await sendCmd(0x03); } catch(_){}
+      await sleep(2500);
+      await reacquire();
+    } else {
+      toast(`Slot ${i+1} active`);
+    }
+    await readAll(); render(); await refreshSlots();
+  } catch(e){ toast('Slot activate failed: ' + e.message, true); }
+  finally { saving = false; }
 }
 
 // Query one field via cmd 0x04, then read 0x81 response.
@@ -456,10 +601,17 @@ async function saveAll(){
     if (!(await ensureDevice())){ toast('No device — click Connect', true); return; }
     // Use writeFieldSafe so a stale handle (after a prior reconnect) is detected
     // on the first write and recovered, instead of silently failing.
+    const failedFields = [];
     for (const [fid,key,type] of FIELDS){
-      await writeFieldSafe(fid, type, config[key] ?? 0);
+      let ok = false;
+      for (let a = 0; a < 2 && !ok; a++){
+        try { await writeFieldSafe(fid, type, config[key] ?? 0); ok = true; }
+        catch(e){ if (a) failedFields.push(key); else await sleep(150); } // one retry per field
+      }
     }
-    try { await sendCmd(0x02); } catch(e){ if(await reacquire()) await sendCmd(0x02); } // save to flash
+    if (failedFields.length) toast('Some fields failed to write: ' + failedFields.join(', '), true);
+    try { await sendCmd(0x02); }
+    catch(e){ try { if (await reacquire()) await sendCmd(0x02); } catch(_){ /* the first attempt often landed despite the host-side throw (USB stalls during the flash write) */ } }
 
     // Only a few fields require a USB re-enumeration to take effect (polling rate,
     // audio buffer length, mic/speaker enable). Everything else (auto-haptics,
@@ -507,7 +659,12 @@ async function saveAll(){
     }
     render();
     toast('Saved. Click Connect to reconnect.', true);
-  }catch(e){ toast('Save failed: '+e.message,true); }
+  }catch(e){
+    // Field writes and the flash save happen BEFORE the late stages that
+    // usually throw (reconnect / read-back), so a blanket "Save failed" was
+    // often false. Be accurate and point at verification.
+    toast('Save hit an error - settings are likely saved anyway; use Re-read to verify. (' + e.message + ')', true);
+  }
   finally { saving = false; } // always resume background polling
 }
 
@@ -566,12 +723,12 @@ async function refreshDiag(){
     el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}${extra}`;
   }
 }
-setInterval(()=>{ if(!saving && device && device.opened && document.getElementById('diagbox')) refreshDiag(); }, 1000);
+setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && document.getElementById('diagbox')) hidLocked(refreshDiag); }, 1000);
 
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.1.0</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.1.2</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
@@ -613,9 +770,13 @@ function render(){
     <input type="file" id="importFile" accept=".json,.ds5profile" style="display:none" onchange="importProfile(event)">
     <button class="btn btn-outline" onclick="rebootBootloader()">Reboot to Bootloader</button>
   </div>
+  <div class="card"><div class="card-title">Profile Slots <span style="font-size:11px;color:var(--sub)">(stored on the dongle — fw 1.1.2+)</span></div>
+    <div style="font-size:12px;color:var(--sub);margin-bottom:6px">Save the current settings into a numbered slot once; activating a slot later is a single instant command (used by the automation via slot-activate.html).</div>
+    <div id="slotbox" style="font-size:13px">Connect to manage slots.</div></div>
   <div class="card"><div class="card-title">Diagnostic</div>
     <div id="diagbox" style="font-size:12px;color:var(--sub)">Reading live stream…</div></div>`;
   app.innerHTML=html;
+  refreshSlots();
 }
 
 render();
