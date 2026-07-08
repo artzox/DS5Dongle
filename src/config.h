@@ -81,6 +81,17 @@ struct __attribute__((packed)) Config {
 void config_default();
 void config_load();
 bool config_save();
+
+// --- Profile slots -----------------------------------------------------------
+// Named copies of Config_body stored in their own flash sector (the sector
+// below the active-config sector). Saving a slot is a rare manual portal
+// action; activating one at game launch is a single atomic command instead of
+// a 30-field write.
+constexpr uint8_t SLOT_COUNT = 8;
+constexpr uint8_t SLOT_NAME_LEN = 16;
+bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len); // current config.body -> slot
+bool slot_activate(uint8_t idx, bool &needs_reenum);                // slot -> active config + flash
+bool slot_info(uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], uint8_t &valid, uint8_t &cfg_version);
 Config_body& get_config();
 void set_config(const uint8_t *new_config, const uint16_t len);
 void config_valid();

@@ -215,6 +215,106 @@ void set_config(const uint8_t *new_config, const uint16_t len) {
     set_gain(config.body.speaker_gain);
 }
 
+// ============================ Profile slots ================================
+// One flash sector (4 KB), 8 records of 512 bytes each. Updating any slot
+// rewrites the whole sector from a RAM image (flash erase granularity), using
+// the same core1-parked flash_safe_execute path as config_save.
+constexpr uint32_t SLOTS_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - 2 * FLASH_SECTOR_SIZE;
+static_assert(SLOTS_FLASH_OFFSET % FLASH_SECTOR_SIZE == 0);
+constexpr uint32_t SLOT_STRIDE = FLASH_SECTOR_SIZE / SLOT_COUNT; // 512
+constexpr uint32_t SLOT_MAGIC = 0x53355344; // "DS5S"
+
+struct __attribute__((packed)) SlotRecord {
+    uint32_t magic;
+    uint8_t  name[SLOT_NAME_LEN]; // NUL-padded, not necessarily NUL-terminated
+    Config_body body;
+    uint32_t crc32; // over name+body
+};
+static_assert(sizeof(SlotRecord) <= SLOT_STRIDE, "slot record must fit its stride");
+
+static const SlotRecord *flash_slot(uint8_t idx) {
+    return reinterpret_cast<const SlotRecord *>(XIP_BASE + SLOTS_FLASH_OFFSET + idx * SLOT_STRIDE);
+}
+
+static uint32_t calc_slot_crc(const SlotRecord &r) {
+    return crc32(reinterpret_cast<const uint8_t *>(&r.name),
+                 sizeof(r.name) + sizeof(Config_body));
+}
+
+static bool slot_record_valid(const SlotRecord *r) {
+    return r->magic == SLOT_MAGIC && r->crc32 == calc_slot_crc(*r);
+}
+
+// RAM image of the whole slots sector for read-modify-erase-write. Static so it
+// doesn't live on a task stack; only touched from the USB command path.
+alignas(4) static uint8_t slot_sector_image[FLASH_SECTOR_SIZE];
+
+static void slots_flash_op(void *) {
+    const uint32_t interrupts = save_and_disable_interrupts();
+    flash_range_erase(SLOTS_FLASH_OFFSET, FLASH_SECTOR_SIZE);
+    flash_range_program(SLOTS_FLASH_OFFSET, slot_sector_image, FLASH_SECTOR_SIZE);
+    restore_interrupts(interrupts);
+}
+
+bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len) {
+    if (idx >= SLOT_COUNT) return false;
+    memcpy(slot_sector_image, reinterpret_cast<const void *>(XIP_BASE + SLOTS_FLASH_OFFSET), FLASH_SECTOR_SIZE);
+    SlotRecord rec{};
+    memset(&rec, 0, sizeof(rec));
+    rec.magic = SLOT_MAGIC;
+    if (name && name_len) {
+        if (name_len > SLOT_NAME_LEN) name_len = SLOT_NAME_LEN;
+        memcpy(rec.name, name, name_len);
+    }
+    rec.body = config.body;
+    rec.crc32 = calc_slot_crc(rec);
+    memset(slot_sector_image + idx * SLOT_STRIDE, 0xff, SLOT_STRIDE);
+    memcpy(slot_sector_image + idx * SLOT_STRIDE, &rec, sizeof(rec));
+    const int rc = flash_safe_execute(slots_flash_op, nullptr, 1000);
+    if (rc != PICO_OK) {
+        printf("[Config] slot_save flash_safe_execute failed: %d\n", rc);
+        return false;
+    }
+    return slot_record_valid(flash_slot(idx));
+}
+
+bool slot_activate(uint8_t idx, bool &needs_reenum) {
+    needs_reenum = false;
+    if (idx >= SLOT_COUNT) return false;
+    const SlotRecord *r = flash_slot(idx);
+    if (!slot_record_valid(r)) return false;
+    // Fields that change USB descriptors / enumeration-time behavior; if any
+    // differ, the caller should issue the reconnect command (0x03) afterwards.
+    const Config_body &o = config.body;
+    const Config_body &n = r->body;
+    needs_reenum = (o.controller_mode      != n.controller_mode)      ||
+                   (o.polling_rate_mode    != n.polling_rate_mode)    ||
+                   (o.audio_buffer_length  != n.audio_buffer_length)  ||
+                   (o.disable_mic          != n.disable_mic)          ||
+                   (o.disable_speaker      != n.disable_speaker)      ||
+                   (o.enable_wake          != n.enable_wake)          ||
+                   (o.disable_usb_sn       != n.disable_usb_sn)       ||
+                   (o.ps_shortcut_enabled  != n.ps_shortcut_enabled);
+    config.body = r->body;
+    config_valid(); // clamp anything out of range (e.g. slot saved by older fw)
+    return config_save();
+}
+
+bool slot_info(uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], uint8_t &valid, uint8_t &cfg_version) {
+    if (idx >= SLOT_COUNT) return false;
+    const SlotRecord *r = flash_slot(idx);
+    if (slot_record_valid(r)) {
+        valid = 1;
+        cfg_version = r->body.config_version;
+        memcpy(name_out, r->name, SLOT_NAME_LEN);
+    } else {
+        valid = 0;
+        cfg_version = 0;
+        memset(name_out, 0, SLOT_NAME_LEN);
+    }
+    return true;
+}
+
 void set_config(const Config_body &new_config) {
     config.body = new_config;
     config_valid();

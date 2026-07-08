@@ -36,7 +36,7 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
 constexpr uint8_t FW_VER_MINOR = 1;
-constexpr uint8_t FW_VER_PATCH = 0;
+constexpr uint8_t FW_VER_PATCH = 2;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
@@ -387,6 +387,73 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             printf("[CMD] Reboot to BOOTSEL (USB bootloader)\n");
             sleep_ms(50);
             reset_usb_boot(0, 0); // noreturn
+            break;
+        }
+        case 0x08: {
+            // Save current config to profile slot. Payload: [slot_idx, name...(<=16)]
+            // A slot save erases+programs a whole flash sector with interrupts
+            // disabled, stalling USB for a moment. Post a PENDING reply (status
+            // 0xFE) first so the host can never read a stale reply from an
+            // earlier command as this one's result; the real reply overwrites
+            // it when the work is done.
+            printf("[CMD] save profile slot\n");
+            { uint8_t pend[63]{}; pend[0]=0x66; pend[1]=0x08; pend[2]=0xFE;
+              if (bufsize >= 1) pend[3] = buffer[0];
+              feature_data[0x81].assign(pend, pend + sizeof(pend)); }
+            uint8_t buf[63]{};
+            buf[0] = 0x66; buf[1] = 0x08; buf[2] = 0x01; // default: fail
+            if (bufsize >= 1 && buffer[0] < SLOT_COUNT) {
+                const uint8_t idx = buffer[0];
+                const uint8_t nlen = (bufsize > 1) ? (uint8_t)std::min<uint16_t>(bufsize - 1, SLOT_NAME_LEN) : 0;
+                if (slot_save(idx, buffer + 1, nlen)) buf[2] = 0x00;
+                buf[3] = idx;
+            }
+            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            break;
+        }
+        case 0x09: {
+            // Activate profile slot. Payload: [slot_idx]
+            // Reply: 0x66 0x09 status idx needs_reenum
+            // needs_reenum=1 means the caller should send cmd 0x03 (USB reconnect)
+            // for descriptor-level settings to take effect.
+            printf("[CMD] activate profile slot\n");
+            { uint8_t pend[63]{}; pend[0]=0x66; pend[1]=0x09; pend[2]=0xFE;
+              if (bufsize >= 1) pend[3] = buffer[0];
+              feature_data[0x81].assign(pend, pend + sizeof(pend)); }
+            uint8_t buf[63]{};
+            buf[0] = 0x66; buf[1] = 0x09; buf[2] = 0x01;
+            if (bufsize >= 1 && buffer[0] < SLOT_COUNT) {
+                bool reenum = false;
+                if (slot_activate(buffer[0], reenum)) {
+                    buf[2] = 0x00;
+                    buf[4] = reenum ? 0x01 : 0x00;
+                }
+                buf[3] = buffer[0];
+            }
+            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            break;
+        }
+        case 0x0a: {
+            // Read profile slot info. Payload: [slot_idx]
+            // Reply: 0x66 0x0a status idx valid cfg_version name[16]
+            printf("[CMD] read profile slot info\n");
+            { uint8_t pend[63]{}; pend[0]=0x66; pend[1]=0x0a; pend[2]=0xFE;
+              if (bufsize >= 1) pend[3] = buffer[0];
+              feature_data[0x81].assign(pend, pend + sizeof(pend)); }
+            uint8_t buf[63]{};
+            buf[0] = 0x66; buf[1] = 0x0a; buf[2] = 0x01;
+            if (bufsize >= 1 && buffer[0] < SLOT_COUNT) {
+                uint8_t valid = 0, ver = 0;
+                uint8_t name[SLOT_NAME_LEN]{};
+                if (slot_info(buffer[0], name, valid, ver)) {
+                    buf[2] = 0x00;
+                    buf[4] = valid;
+                    buf[5] = ver;
+                    memcpy(buf + 6, name, SLOT_NAME_LEN);
+                }
+                buf[3] = buffer[0];
+            }
+            feature_data[0x81].assign(buf, buf + sizeof(buf));
             break;
         }
     }
