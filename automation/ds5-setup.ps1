@@ -753,11 +753,15 @@ if (-not (Test-Path -LiteralPath $ovrList)) {
 # DS5 per-game profile overrides - apply a CUSTOM profile for specific games
 # instead of the default audio-mix / native-off pair. One rule per line:
 #
-#   name fragment = profile-file.html [, audio|noaudio]
+#   name fragment = slot N                      (dongle profile slot, fw 1.1.2+)
+#   name fragment = profile-file.html            (exported profile file)
+#   ... either form takes an optional ", audio" or ", noaudio" flag
 #
 # - The fragment matches the Playnite game name (case-insensitive, partial,
 #   accent/encoding tolerant - same rules as native-games.txt).
-# - The profile file must be an exported .autoapply.html placed in profiles\.
+# - "slot N" (or "slot:N", N = 1-8) activates a profile saved on the dongle in
+#   the portal's Profile Slots panel - a single instant command; preferred.
+# - The file form points at an exported .autoapply.html placed in profiles\.
 # - Optional flag: ", audio" also runs the ds5audio capture, ", noaudio" skips
 #   it. Without a flag, native-games.txt decides the capture as usual.
 # - First matching line wins. Lines starting with # are ignored.
@@ -765,8 +769,10 @@ if (-not (Test-Path -LiteralPath $ovrList)) {
 #   profile IS the mix profile).
 #
 # Examples - replace with your own:
-#Cyberpunk = cyberpunk-heavy-triggers.autoapply.html
+#Cyberpunk = slot 3
+#Elden Ring = slot 4, noaudio
 #Doom = doom-recoil.autoapply.html, audio
+#Stray = stray-soft-triggers.autoapply.html
 '@
     Set-Content -LiteralPath $ovrList -Value $tpl2 -Encoding UTF8
     Write-Host "  wrote profile-overrides.txt (template - optional)"
