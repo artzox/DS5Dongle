@@ -1,5 +1,7 @@
 # DS5Dongle audio + Playnite automation
 
+**Version 1.1.1**
+
 Zero-config auto-haptics for your DualSense via the DS5Dongle, with Playnite
 integration that automatically switches between native-haptics games and
 audio-driven auto-haptics games.
@@ -33,12 +35,15 @@ audio-driven auto-haptics games.
    and generates:
    - `ds5-global-start.ps1`, `ds5-global-stop.ps1`
    - `ds5-start.bat`, `ds5-stop.bat`
-   - `native-games.txt` (a template, if you don't already have one)
+   - `native-games.txt` (a curated default list - kept if you already have one)
+   - `profile-overrides.txt` (optional per-game profiles template)
+   - `ds5-policy.bat` / `ds5-policy-remove.bat`
    The installer prints the exact Playnite lines to use - copy them.
 
-3. **Grant the portal HID access once:** open
-   `..\ds5-config-portal.html`, click Connect, pick your dongle. This
-   one-time grant lets the `.autoapply.html` profiles apply silently afterward.
+3. **Run `ds5-policy.bat` once** (self-elevates). It pre-grants the dongle to the
+   profile pages via browser policy, so the `.autoapply.html` profiles apply
+   silently and permanently - no Connect clicks, survives browser restarts.
+   (For using the portal itself, click Connect there once as usual.)
 
 4. **Edit `native-games.txt`** - one game per line (a distinctive word is enough;
    matching is case-insensitive and partial). Games listed here use native
@@ -53,18 +58,15 @@ audio-driven auto-haptics games.
    > edition-suffix mismatches.
 
 5. **Wire up Playnite** - Settings -> Scripts (for all games), paste these into the
-   **script boxes** (not an application/action field):
+   **script boxes**, adjusting the path to your install folder:
    - Before starting a game:
-     `& "<folder>\ds5-global-start.ps1" -GameName $game.Name`
+     `& "<your-folder>\automation\ds5-start.bat" "{Name}"`
    - After exiting a game:
-     `& "<folder>\ds5-global-stop.ps1" -GameName $game.Name`
+     `& "<your-folder>\automation\ds5-stop.bat" "{Name}"`
 
-   > **Why the inline `$game.Name` and not the `.bat` with `{Name}`?** Playnite's
-   > `{Name}` token does not reliably expand in script fields, which is why the log
-   > can show `game: ''`. Reading `$game.Name` directly in the script box is reliable
-   > because `$game` is a real Playnite variable available in that runtime. The `.bat`
-   > files still work for manual/double-click use, but for Playnite use the inline
-   > calls above.
+   > Use the `.bat` launchers, not the `.ps1` files directly - `.ps1` paths are
+   > opened by Notepad instead of executed. The setup installer prints these two
+   > lines with your actual folder path filled in, ready to copy.
 
 That's it. Launch a game and check `ds5-automation.log` to confirm the decision.
 
@@ -82,6 +84,25 @@ The two `.autoapply.html` files are defaults. To make your own: open the portal,
 set things how you like, click **Export HTML**, name it, and drop it in `profiles\`.
 Point the scripts at it by renaming or editing the generated `.ps1` (or just
 overwrite the default file of the same name).
+
+## Per-game custom profiles
+
+To apply a custom profile for specific games (instead of the default
+audio-mix / native-off pair), export it from the portal, drop the
+`.autoapply.html` into `profiles\`, and add a rule to `profile-overrides.txt`:
+
+```
+Cyberpunk = cyberpunk-heavy-triggers.autoapply.html
+Doom = doom-recoil.autoapply.html, audio
+```
+
+Matching follows the same rules as `native-games.txt` (partial,
+case-insensitive, encoding-tolerant); first hit wins. The optional
+`, audio` / `, noaudio` flag forces the ds5audio capture on or off - without
+it, the native list decides as usual. Everything happens in the normal
+pre-launch apply (one profile, one window, no focus loss), and the mix profile
+is restored automatically on game exit. Do NOT wire extra per-game scripts in
+Playnite for this: a second apply would race the first one mid-write.
 
 ## Troubleshooting
 
@@ -113,9 +134,10 @@ open) or `python ds5audio.py --verbose` (audio only).
 
 Common cases:
 
-- `game: ''` (empty) - Playnite didn't pass the name. This happens when using the
-  `.bat` with `{Name}` (which Playnite doesn't reliably expand). Fix: use the inline
-  `& "...\ds5-global-start.ps1" -GameName $game.Name` call in the script box instead.
+- `game: ''` (empty) - Playnite didn't pass the name. Check that the script box
+  contains the `.bat` call exactly as printed by setup, including the quoted
+  `"{Name}"` argument; the start script also falls back to reading Playnite's own
+  log for the name.
 - Audio ran on a native game - the name didn't match `native-games.txt`; check the
   logged name and add a distinctive substring of it to the list.
 - Profile didn't apply - confirm you did the one-time portal Connect, and that the
