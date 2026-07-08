@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here.
 
+## [1.1.1] — 2026-07-08
+
+Documentation and defaults release — firmware and portal unchanged (still 1.1.0).
+
+### Changed
+- **Playnite wiring docs corrected.** The recommended commands are the `.bat`
+  launchers (`& "<your-folder>\automation\ds5-start.bat" "{Name}"` and the
+  matching `ds5-stop.bat` line) — pasting `.ps1` paths gets them opened in
+  Notepad instead of executed. Setup already printed the `.bat` lines; the
+  automation README now matches.
+- **native-games.txt ships as a curated default list** of PC games with native
+  DualSense haptics (Returnal, God of War Ragnarök, PRAGMATA, Indiana Jones and
+  the Great Circle, Ratchet & Clank: Rift Apart, Until Dawn, Alan Wake II,
+  Days Gone, DOOM: The Dark Ages, The Last of Us Part I, Marvel's Spider-Man 2,
+  Prince of Persia: The Lost Crown, SILENT HILL 2) instead of placeholder
+  examples. Written as UTF-8; existing lists are never overwritten.
+- Automation README setup steps updated to the policy-based grant flow and the
+  full generated-file list.
+
 ## [1.1.0] — 2026-07-07
 
 Adaptive triggers gain a push-back recoil kick (firmware), and profile
@@ -36,6 +55,11 @@ auto-apply is now robust with the wake feature enabled and fully hands-off
   and thump frequency (default 35; lower = heavier). New config fields 0x39–0x3b;
   live envelope + KICK flag added to the portal diagnostics (diag 0x3c). FW
   version reads 1.1.0.
+- **Per-game profile overrides.** `profile-overrides.txt` maps game names to
+  custom exported profiles (`game = file.html [, audio|noaudio]`), applied in the
+  normal pre-launch flow with the mix profile restored on exit. The start/stop
+  scripts now share state through `ds5-last-start.txt`, making the exit decision
+  reliable across separate invocations and aware of overrides.
 - **Policy-based WebHID grant (`ds5-policy.bat` / `ds5-policy-remove.bat`).**
   Pre-grants the dongle to the profile pages via the Chromium
   `WebHidAllowDevicesForUrls` policy: no Connect click, immune to browser

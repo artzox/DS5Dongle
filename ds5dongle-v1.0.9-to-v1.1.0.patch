@@ -1,0 +1,407 @@
+diff -ru pristine/src/cmd.cpp ds5/src/cmd.cpp
+--- pristine/src/cmd.cpp	2026-07-06 07:46:57.000000000 +0000
++++ ds5/src/cmd.cpp	2026-07-07 07:56:31.902646077 +0000
+@@ -35,8 +35,8 @@
+ // Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
+ // can display which build is flashed. Bump on every released build.
+ constexpr uint8_t FW_VER_MAJOR = 1;
+-constexpr uint8_t FW_VER_MINOR = 0;
+-constexpr uint8_t FW_VER_PATCH = 9;
++constexpr uint8_t FW_VER_MINOR = 1;
++constexpr uint8_t FW_VER_PATCH = 0;
+ 
+ template<typename T>
+ static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
+@@ -185,6 +185,9 @@
+         case 0x32: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_invert=v; break; }
+         case 0x33: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.haptics_aa=v; break; }
+         case 0x34: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.synth_force=v; break; }
++        case 0x39: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback=v; break; }
++        case 0x3a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_src=v; break; }
++        case 0x3b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_freq=v; break; }
+         default:
+             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
+             return false;
+@@ -266,6 +269,10 @@
+         case 0x32: return write_config_value(buffer, bufsize, config.gyro_invert);
+         case 0x33: return write_config_value(buffer, bufsize, config.haptics_aa);
+         case 0x34: return write_config_value(buffer, bufsize, config.synth_force);
++        case 0x39: return write_config_value(buffer, bufsize, config.at_pushback);
++        case 0x3a: return write_config_value(buffer, bufsize, config.at_pushback_src);
++        case 0x3b: return write_config_value(buffer, bufsize, config.at_pushback_freq);
++        case 0x3c: { extern volatile uint8_t g_diag_at_env; return write_config_value(buffer, bufsize, (uint8_t)g_diag_at_env); }
+         case 0x35: { extern volatile uint16_t g_diag_gyro; return write_config_value(buffer, bufsize, (uint16_t)g_diag_gyro); }
+         case 0x36: { extern volatile uint8_t g_diag_synth; return write_config_value(buffer, bufsize, (uint8_t)g_diag_synth); }
+         case 0x37: { extern volatile uint16_t g_diag_ch01_peak; return write_config_value(buffer, bufsize, (uint16_t)g_diag_ch01_peak); }
+diff -ru pristine/src/config.cpp ds5/src/config.cpp
+--- pristine/src/config.cpp	2026-07-06 07:46:57.000000000 +0000
++++ ds5/src/config.cpp	2026-07-07 07:56:31.902015806 +0000
+@@ -132,6 +132,9 @@
+     if (body->effect_leak_attack > 100) body->effect_leak_attack = 50;
+     if (body->effect_leak_output_hp_hz < 50 || body->effect_leak_output_hp_hz > 2000) body->effect_leak_output_hp_hz = 200;
+     // Rumble-to-trigger defaults (feature OFF by default).
++    if (body->at_pushback > 100) body->at_pushback = 0;     // 0=off (fresh flash 0xFF lands here)
++    if (body->at_pushback_src > 2) body->at_pushback_src = 2;
++    if (body->at_pushback_freq < 10 || body->at_pushback_freq > 200) body->at_pushback_freq = 35; // fresh flash 0xFF lands here
+     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
+     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
+     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
+diff -ru pristine/src/config.h ds5/src/config.h
+--- pristine/src/config.h	2026-07-06 07:46:57.000000000 +0000
++++ ds5/src/config.h	2026-07-07 07:56:31.901715194 +0000
+@@ -63,6 +63,12 @@
+     uint8_t gyro_invert;    // bit0 = invert X, bit1 = invert Y
+     uint8_t haptics_aa;     // native-haptics smoothing: 1=off (raw/gritty), 2=light 1-pole ~2.4kHz (default), 3=strong 2-pole ~1.3kHz
+     uint8_t synth_force;    // 0=yield to game trigger effects (default), 1=force r2t/at even if a game/app sends effects
++    // Adaptive triggers Stage 2: push-back kick (recoil). While resistance is
++    // engaged, the vibration envelope momentarily raises the resistance strength,
++    // pressing the trigger back against the finger - recoil on top of resistance.
++    uint8_t at_pushback;     // [0-100] kick strength; 0=off (Stage 1 behavior unchanged)
++    uint8_t at_pushback_src; // envelope source: 0=rumble only, 1=audio haptics only, 2=both (max)
++    uint8_t at_pushback_freq;// [10-200] vibration frequency of the kick thump; lower = heavier knock (default 35)
+ };
+ 
+ struct __attribute__((packed)) Config {
+diff -ru pristine/src/state_mgr.cpp ds5/src/state_mgr.cpp
+--- pristine/src/state_mgr.cpp	2026-07-06 07:46:57.000000000 +0000
++++ ds5/src/state_mgr.cpp	2026-07-07 07:56:31.903596261 +0000
+@@ -41,6 +41,7 @@
+ // Live synthesis diagnostics, readable via config field 0x36:
+ //   bit0 game-owns-L2, bit1 game-owns-R2, bit2 synth-owns-L2, bit3 synth-owns-R2, bit4 at-engaged
+ volatile uint8_t g_diag_synth = 0;
++volatile uint8_t g_diag_at_env = 0; // live push-back envelope (0-255), diag field 0x3c
+ // Synthesized-trigger bookkeeping (file scope so the staleness watchdog can see it).
+ static bool synth_owned_l2 = false, synth_owned_r2 = false, at_engaged = false;
+ static uint32_t g_last_state_update_ms = 0;
+@@ -228,6 +229,7 @@
+     {
+         const auto &cfg = get_config();
+ 
++        bool at_kick_diag = false; // KICK burst active this cycle (diag bit 32)
+         // -- game-ownership recency latch --
+         static uint32_t last_game_r2_ms = 0, last_game_l2_ms = 0;
+         static bool game_ever_r2 = false, game_ever_l2 = false;
+@@ -355,15 +357,65 @@
+         } else if (at_wants_r2) {
+             uint8_t *ffb = state.RightTriggerFFB;
+             for (int i = 0; i < 11; ++i) ffb[i] = 0;
+-            ffb[0] = 0x21; // Feedback (constant resistance)
+-            const uint8_t start = (cfg.at_start_pos > 9) ? 0 : cfg.at_start_pos;
+-            uint16_t zones = 0;
+-            for (int z = start; z <= 9; ++z) zones |= (1u << z);
+-            ffb[1] = (uint8_t)(zones & 0xFF);
+-            ffb[2] = (uint8_t)((zones >> 8) & 0x03);
+-            uint8_t wire = (uint8_t)(((uint16_t)cfg.at_strength * 7u + 50u) / 100u);
+-            if (wire > 7) wire = 7;
+-            pack_zones(ffb, zones, wire);
++            // -- Stage 2: push-back kick (recoil) --
++            // A static change in Feedback strength is barely perceptible under a
++            // finger that already holds the trigger, so the kick is delivered as
++            // a LOW-FREQUENCY VIBRATION BURST instead: while the vibration
++            // envelope is hot, the R2 slot temporarily switches from Feedback
++            // (resistance) to Vibration (recoil thump) and drops back to
++            // resistance as the burst fades. Hysteresis (on >= 32, off < 16) plus
++            // a 45 ms minimum burst stop mode chatter around the threshold.
++            // at_pushback == 0 leaves Stage 1 byte-identical.
++            bool kick_now = false;
++            if (cfg.at_pushback > 0) {
++                uint16_t env = 0; // vibration envelope, 0-255
++                if (cfg.at_pushback_src == 0 || cfg.at_pushback_src == 2) {
++                    const uint8_t hr = update.EnableRumbleEmulation ? update.RumbleEmulationRight : 0;
++                    const uint8_t hl = update.EnableRumbleEmulation ? update.RumbleEmulationLeft  : 0;
++                    extern volatile uint8_t g_rumble_l, g_rumble_r; // converted-rumble path
++                    const uint8_t g = (g_rumble_l > g_rumble_r) ? g_rumble_l : g_rumble_r;
++                    const uint8_t h = (hr > hl) ? hr : hl;
++                    env = (h > g) ? h : g;
++                }
++                if (cfg.at_pushback_src >= 1) {
++                    extern volatile uint16_t g_diag_ch01_peak; // live auto-haptics input peak (0-32767)
++                    uint16_t a = (uint16_t)(g_diag_ch01_peak >> 7); // -> 0-255
++                    if (a > 255) a = 255;
++                    if (a > env) env = a;
++                }
++                g_diag_at_env = (uint8_t)env;
++                static bool     kick_on = false;
++                static uint32_t kick_hold_until_ms = 0;
++                if (!kick_on && env >= 32) { kick_on = true; kick_hold_until_ms = now_ms + 45; }
++                else if (kick_on && env < 16 && (int32_t)(now_ms - kick_hold_until_ms) >= 0) kick_on = false;
++                if (kick_on) {
++                    uint32_t amp3 = ((uint32_t)env * cfg.at_pushback * 7u + 12750u) / 25500u;
++                    if (amp3 > 7) amp3 = 7;
++                    if (amp3 > 0) {
++                        kick_now = true;
++                        ffb[0] = 0x26;                    // Vibration: the recoil thump
++                        const uint16_t vz = 0x03FF;       // full travel
++                        ffb[1] = (uint8_t)(vz & 0xFF);
++                        ffb[2] = (uint8_t)((vz >> 8) & 0x03);
++                        pack_zones(ffb, vz, (uint8_t)amp3);
++                        ffb[9] = cfg.at_pushback_freq;    // low = heavier knock
++                    }
++                }
++            } else {
++                g_diag_at_env = 0;
++            }
++            if (!kick_now) {
++                ffb[0] = 0x21; // Feedback (constant resistance)
++                const uint8_t start = (cfg.at_start_pos > 9) ? 0 : cfg.at_start_pos;
++                uint16_t zones = 0;
++                for (int z = start; z <= 9; ++z) zones |= (1u << z);
++                ffb[1] = (uint8_t)(zones & 0xFF);
++                ffb[2] = (uint8_t)((zones >> 8) & 0x03);
++                uint8_t wire = (uint8_t)(((uint16_t)cfg.at_strength * 7u + 50u) / 100u);
++                if (wire > 7) wire = 7;
++                pack_zones(ffb, zones, wire);
++            }
++            at_kick_diag = kick_now;
+             state.AllowRightTriggerFFB = 1;
+             synth_owned_r2 = true;
+         } else if (r2t_wants_r2) {
+@@ -377,7 +429,7 @@
+ 
+         g_diag_synth = (uint8_t)((game_owns_l2 ? 1 : 0) | (game_owns_r2 ? 2 : 0) |
+                                  (synth_owned_l2 ? 4 : 0) | (synth_owned_r2 ? 8 : 0) |
+-                                 (at_engaged ? 16 : 0));
++                                 (at_engaged ? 16 : 0) | (at_kick_diag ? 32 : 0));
+     }
+ 
+     copy_if_allowed(
+--- pristine/ds5-config-portal.html	2026-07-06 07:51:15.000000000 +0000
++++ ds5/ds5-config-portal.html	2026-07-07 07:57:17.425703586 +0000
+@@ -38,6 +38,49 @@
+ <div class="toast" id="toast"></div>
+ <script>
+ const SONY_VID = 0x054C, DS5_PID = 0x0CE6, DSE_PID = 0x0DF2;
++// The dongle can expose EXTRA HID interfaces with the same VID/PID: enabling
++// Wake (or the PS shortcut) adds a boot-keyboard interface for the wake key.
++// WebHID lists every interface as its own HIDDevice, and feature reports only
++// work on the GAMEPAD interface (top-level collection Generic Desktop/Game Pad
++// or the vendor-defined pages) - sending to the keyboard interface fails, which
++// broke profile auto-apply whenever Wake was on. Always select by collection,
++// never by VID/PID alone.
++function isWakeKeyboardIface(d){
++  // The wake feature adds a boot-keyboard HID interface with the same VID/PID.
++  // Only treat a device as that keyboard when it is UNAMBIGUOUSLY one (every
++  // top-level collection is Generic Desktop / Keyboard). Anything uncertain is
++  // kept - selection must never be stricter than the plain VID/PID matching
++  // that has always worked.
++  const cols = (d && d.collections) || [];
++  return cols.length > 0 && cols.every(c => c.usagePage === 0x01 && c.usage === 0x06);
++}
++function pickDs5(list){
++  const m = (list || []).filter(x => x && x.vendorId === SONY_VID
++                                  && (x.productId === DS5_PID || x.productId === DSE_PID));
++  return m.find(x => !isWakeKeyboardIface(x)) || m[0] || null;
++}
++
++// Unthrottled sleep. Chromium throttles main-thread timers on hidden/minimized
++// pages to >=1 per second, which would turn the many short waits between HID
++// reads into minutes when the automation opens this page minimized. Web Workers
++// are exempt from that throttling, so delays keep full speed even when hidden.
++const _sleepWorker = (() => {
++  try {
++    const src = 'onmessage=(e)=>{setTimeout(()=>postMessage(e.data),e.data.ms)}';
++    return new Worker(URL.createObjectURL(new Blob([src], {type:'text/javascript'})));
++  } catch (_) { return null; } // fallback below keeps old behavior
++})();
++let _sleepSeq = 0;
++const _sleepWaiters = new Map();
++if (_sleepWorker) _sleepWorker.onmessage = (e) => {
++  const w = _sleepWaiters.get(e.data.id);
++  if (w) { _sleepWaiters.delete(e.data.id); w(); }
++};
++function sleep(ms){
++  if (!_sleepWorker) return new Promise(r => setTimeout(r, ms));
++  return new Promise(r => { const id = ++_sleepSeq; _sleepWaiters.set(id, r); _sleepWorker.postMessage({id, ms}); });
++}
++
+ const SET_REPORT = 0x80, GET_REPORT = 0x81;
+ 
+ // Field definitions: [field_id, key, type('u8'|'u16'|'f32'), label, kind, opts]
+@@ -96,6 +139,9 @@
+     [0x2c,'at_strength','u8','Resistance strength','number',[0,100]],
+     [0x2d,'at_threshold','u8','L2 press threshold to arm','number',[1,255]],
+     [0x2e,'at_start_pos','u8','R2 resistance start position','number',[0,9]],
++    [0x39,'at_pushback','u8','Push-back kick (recoil) strength','number',[0,100]],
++    [0x3a,'at_pushback_src','u8','Kick follows','select',{0:'Rumble only',1:'Audio haptics only',2:'Rumble + audio (strongest)'}],
++    [0x3b,'at_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
+   ]},
+   { title: 'Gyro Aiming (experimental)', fields: [
+     [0x2f,'gyro_mode','u8','Mode','select',{0:'Off',1:'Only while L2 (aim) held',2:'Always on',3:'Only while touchpad touched',4:'Always on — touch touchpad to pause (ratchet)'}],
+@@ -138,13 +184,14 @@
+       const d = e.device;
+       if (!d || d.vendorId !== SONY_VID) return;
+       if (d.productId !== DS5_PID && d.productId !== DSE_PID) return;
++      if (isWakeKeyboardIface(d)) return;
+       // Only auto-recover if we don't already hold a live handle.
+       if (device && device.opened) return;
+       device = d;
+       if (!device.opened) await device.open();
+       // Give the firmware a moment to (re)populate its feature data after connect,
+       // then re-read so the UI reflects real values rather than 0s.
+-      await new Promise(r => setTimeout(r, 400));
++      await sleep(400);
+       if (typeof readAll === 'function') { await readAll(); }
+       if (typeof render === 'function') { render(); }
+     } catch (_) { /* leave handle; user can click Connect */ }
+@@ -161,7 +208,7 @@
+     const filters=[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}];
+     const devices=await navigator.hid.requestDevice({filters});
+     if(!devices.length) return;
+-    device=devices[0];
++    device=pickDs5(devices) || devices[0];
+     if(!device.opened) await device.open();
+     await readAll();
+     savedSnapshot = {...config}; // baseline for change detection on save
+@@ -199,18 +246,18 @@
+   // re-read, when one field's value was read into another's slot).
+   for (let tryN = 0; tryN < 4; tryN++){
+     await sendCmd(0x04, [fieldId]);
+-    await new Promise(r => setTimeout(r, 25));
++    await sleep(25);
+     const data = await device.receiveFeatureReport(GET_REPORT);
+     const raw = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+     let m = -1;
+     for (let k = 0; k < Math.min(4, raw.length); k++){
+       if (raw[k] === 0x66 && raw[k+1] === 0x04){ m = k; break; }
+     }
+-    if (m < 0){ await new Promise(r => setTimeout(r, 15)); continue; }
++    if (m < 0){ await sleep(15); continue; }
+     const respField = raw[m + 2];
+     if (respField !== fieldId){
+       // Stale response for a different field — wait and retry.
+-      await new Promise(r => setTimeout(r, 15));
++      await sleep(15);
+       continue;
+     }
+     const base = m + 3; // skip 0x66, 0x04, field_id -> value
+@@ -240,7 +287,7 @@
+   // If a lot of reads failed, the device was likely not ready yet — settle and
+   // retry once so the refresh doesn't leave stale/zero values.
+   if (failures > FIELDS.length / 3){
+-    await new Promise(r => setTimeout(r, 400));
++    await sleep(400);
+     let ok = true;
+     for (const [fid,key,type] of FIELDS){
+       try { fresh[key] = await readField(fid, type); }
+@@ -275,14 +322,14 @@
+   for (let i = 0; i < 10; i++){
+     try {
+       const devs = await navigator.hid.getDevices();
+-      const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
++      const d = pickDs5(devs);
+       if (d){
+         device = d;
+         if (!device.opened) await device.open();
+         return true;
+       }
+     } catch(e){}
+-    await new Promise(r => setTimeout(r, 250));
++    await sleep(250);
+   }
+   return false;
+ }
+@@ -438,18 +485,18 @@
+     // NOT separately close/open the WebHID handle (that would cause a SECOND
+     // visible reconnect); instead we let the firmware reconnect, then re-acquire
+     // the handle that the OS presents after re-enumeration.
+-    await new Promise(r => setTimeout(r, 300)); // let flash write finish
++    await sleep(300); // let flash write finish
+     try { await sendCmd(0x03); } catch(e){ /* device drops here, expected */ }
+     device = null; // drop our reference; the re-enumerated device is a new handle
+     for (let attempt = 0; attempt < 12; attempt++){
+-      await new Promise(r => setTimeout(r, 500));
++      await sleep(500);
+       try {
+         const devs = await navigator.hid.getDevices();
+-        const d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
++        const d = pickDs5(devs);
+         if (d){
+           device = d;
+           if (!device.opened) await device.open();
+-          await new Promise(r => setTimeout(r, 350));
++          await sleep(350);
+           await readAll();
+           savedSnapshot = {...config};
+           render();
+@@ -476,8 +523,10 @@
+     let gy = null, sy = null, c01 = null, c23 = null;
+     try { gy = await readField(0x35, 'u16'); sy = await readField(0x36, 'u8'); } catch(e) {}
+     try { c01 = await readField(0x37, 'u16'); c23 = await readField(0x38, 'u16'); } catch(e) {}
+-    return {br, ch, rssi, gy, sy, c01, c23};
+-  } catch(e){ return {br:'err', ch:'err', rssi:null, gy:null, sy:null, c01:null, c23:null}; }
++    let ke = null;
++    try { ke = await readField(0x3c, 'u8'); } catch(e) {}
++    return {br, ch, rssi, gy, sy, c01, c23, ke};
++  } catch(e){ return {br:'err', ch:'err', rssi:null, gy:null, sy:null, c01:null, c23:null, ke:null}; }
+ }
+ function rssiLabel(r){
+   if (r === null || r === undefined) return 'n/a';
+@@ -509,7 +558,10 @@
+       if (d.sy & 4)  f.push('synth-L2');
+       if (d.sy & 8)  f.push('synth-R2');
+       if (d.sy & 16) f.push('AT-engaged');
++      if (d.sy & 32) f.push('KICK');
+       extra += `<br>Trigger synthesis: ${f.length ? f.join(' · ') : 'idle'}  (game-owns = your r2t/at yield; use Force override to take over)`;
++      if (d.ke !== null && d.ke !== undefined)
++        extra += `<br>Push-back envelope: ${d.ke}/255  (must rise with rumble/gunfire while AT-engaged; kick fires at >=32 - if this stays 0 during rumble, the selected source isn't producing signal)`;
+     }
+     el.innerHTML = `Live audio stream: bytes_read=${d.br}, detected channels=${d.ch}  (4=native, 2=Windows/DS4Windows stereo)<br>Bluetooth signal: ${rssiLabel(d.rssi)}${extra}`;
+   }
+@@ -519,7 +571,7 @@
+ function render(){
+   const app=document.getElementById('app');
+   const on = device && device.opened;
+-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">POC</span></h1>
++  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.1.0</span></h1>
+     <p class="subtitle">awalol RAM base — field-ID protocol</p>
+     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
+       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
+@@ -612,12 +664,12 @@
+       banner.textContent = 'Auto-apply: connecting…';
+       banner.style.background = '#1e293b';
+       let devs = await navigator.hid.getDevices();
+-      let d = devs.find(x => x.vendorId===SONY_VID && (x.productId===DS5_PID || x.productId===DSE_PID));
++      let d = pickDs5(devs);
+       // If not already granted, a gesture lets us prompt the picker directly.
+       if (!d && viaGesture){
+         const picked = await navigator.hid.requestDevice({ filters: [
+           {vendorId:SONY_VID, productId:DS5_PID}, {vendorId:SONY_VID, productId:DSE_PID} ]});
+-        d = picked && picked[0];
++        d = picked && (pickDs5(picked) || picked[0]);
+       }
+       if (!d){
+         showConnectButton('No granted device yet — click to connect and apply.');
+@@ -625,7 +677,7 @@
+       }
+       device = d;
+       if (!device.opened) await device.open();
+-      await new Promise(r=>setTimeout(r,300));
++      await sleep(300);
+       await readAll();
+ 
+       const settings = (json && typeof json.settings==='object') ? json.settings : json;
+@@ -640,6 +692,14 @@
+         await saveAll();
+         banner.textContent = `"${profileName||'profile'}" saved to device ✓`;
+         banner.style.background = '#14532d';
++        // AUTOCLOSE: applied OK - close this tab so profile pages don't pile up.
++        // A tab opened by the automation has a single history entry, which makes
++        // it script-closable. Gated to embedded profiles (or ?autoclose=1) so the
++        // master portal / manual use never closes itself; failure paths keep the
++        // page open so errors stay visible.
++        if (EMBEDDED_PROFILE || params.get('autoclose')==='1'){
++          setTimeout(()=>{ try { window.close(); } catch(_){} }, 1200);
++        }
+       } else {
+         banner.textContent += ' — click Save to Device to apply.';
+       }
+@@ -650,6 +710,9 @@
+   }
+ 
+   function showConnectButton(msg){
++    // Surface the wait in the taskbar: the automation opens this window
++    // minimized, so a silent "click to connect" state would be invisible.
++    document.title = 'CONNECT NEEDED - DS5 Bridge Config';
+     banner.style.background = '#7c2d12';
+     banner.innerHTML = '';
+     const span = document.createElement('span'); span.textContent = msg + '  ';
