@@ -93,6 +93,9 @@ const SECTIONS = [
     [0x1a,'auto_haptics_smooth','u8','Smoothness','number',[0,100]],
     [0x17,'auto_haptics_gate','u8','Noise Gate','number',[0,100]],
     [0x14,'auto_haptics_lowpass_hz','u16','LP Cutoff (Hz)','number',[30,200]],
+    [0x4a,'ah_xover_hz','u16','Frequency Split Crossover (Hz, 0 = off; 30-200, must be BELOW LP Cutoff)','number',[0,200]],
+    [0x4b,'ah_low_gain','u8','Low Band Gain (below crossover - impacts)','number',[0,100]],
+    [0x4c,'ah_high_gain','u8','High Band Gain (crossover..cutoff - music/voice range)','number',[0,100]],
     [0x18,'auto_haptics_slope','u8','Filter Slope','select',{6:'6 dB/oct (gentle)',12:'12 dB/oct (default)',24:'24 dB/oct (steep)'}],
     [0x15,'auto_mute_replace','u8','Auto-mute Speaker (Replace)','bool'],
     [0x16,'auto_mute_mix','u8','Auto-mute Speaker (Mix)','bool'],
@@ -104,6 +107,8 @@ const SECTIONS = [
     [0x25,'effect_leak_attack','u8','Effect Leak Attack/Responsiveness','number',[0,100]],
     [0x26,'effect_leak_output_hp_hz','u16','Effect Leak Output High-pass (Hz)','number',[50,2000]],
     [0x1f,'effect_leak_hp_hz','u16','Effect Leak Detection Band (Hz)','number',[100,5000]],
+    [0x40,'effect_leak_lp_hz','u16','Effect Leak Output Low-pass (Hz) - high wall of the leak window','number',[500,12000]],
+    [0x41,'effect_leak_hold','u8','Effect Leak Gate Hold (x5 ms) - stops flutter/chop','number',[0,100]],
   ]},
   { title: 'Haptics & Audio', fields: [
     [0x01,'haptics_gain','f32','Native Haptics Gain','number',[1.0,2.0]],
@@ -134,14 +139,24 @@ const SECTIONS = [
     [0x2a,'r2t_frequency','u8','Vibration frequency','number',[1,255]],
     [0x34,'synth_force','u8','Force override (ignore game/app trigger effects — applies to r2t AND adaptive triggers)','bool'],
   ]},
-  { title: 'Adaptive Triggers — L2-gated R2 (Stage 2)', fields: [
-    [0x2b,'at_mode','u8','Mode','select',{0:'Off',1:'L2 (aim) adds R2 resistance',2:'Always on'}],
+  { title: 'Adaptive Triggers — R2 (right trigger)', fields: [
+    [0x2b,'at_mode','u8','Mode','select',{0:'Off',1:'Gated (L2 arms it)',2:'Always on'}],
     [0x2c,'at_strength','u8','Resistance strength','number',[0,100]],
-    [0x2d,'at_threshold','u8','L2 press threshold to arm','number',[1,255]],
-    [0x2e,'at_start_pos','u8','R2 resistance start position','number',[0,9]],
-    [0x39,'at_pushback','u8','Push-back kick (recoil) strength','number',[0,100]],
-    [0x3a,'at_pushback_src','u8','Kick follows','select',{0:'Rumble only',1:'Audio haptics only',2:'Rumble + audio (strongest)'}],
+    [0x2d,'at_threshold','u8','Arming threshold (L2 press depth)','number',[1,255]],
+    [0x2e,'at_start_pos','u8','Resistance start position','number',[0,9]],
+    [0x39,'at_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
+    [0x44,'at_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
     [0x3b,'at_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
+    [0x3a,'at_pushback_src','u8','Kick follows (shared by both triggers)','select',{0:'Rumble only',1:'Audio haptics only',2:'Rumble + audio (strongest)'}],
+  ]},
+  { title: 'Adaptive Triggers — L2 (left trigger)', fields: [
+    [0x42,'at_l2_mode','u8','Mode','select',{0:'Off',1:'Gated (R2 arms it)',2:'Always on'}],
+    [0x43,'at_l2_strength','u8','Resistance strength','number',[0,100]],
+    [0x45,'at_l2_threshold','u8','Arming threshold (R2 press depth)','number',[1,255]],
+    [0x46,'at_l2_start_pos','u8','Resistance start position','number',[0,9]],
+    [0x47,'at_l2_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
+    [0x49,'at_l2_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
+    [0x48,'at_l2_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
   ]},
   { title: 'Gyro Aiming', fields: [
     [0x2f,'gyro_mode','u8','Mode','select',{0:'Off',1:'Only while L2 (aim) held',2:'Always on',3:'Only while touchpad touched',4:'Always on — touch touchpad to pause (ratchet)'}],
@@ -417,6 +432,14 @@ async function readField(fieldId, type){
 
 async function readAll(){
   const prev = {...config};
+  // Bulk fast path (fw >= 1.4.0): whole config in a few packets.
+  if (bulkSupported !== false){
+    try {
+      const got = await bulkReadFields(FIELDS);
+      if (got){ bulkSupported = true; config = got; savedSnapshot = {...got}; return; }
+    } catch(_){}
+    if (bulkSupported === null) bulkSupported = false; // old firmware: stop probing
+  }
   const fresh = {};
   let failures = 0;
   for (const [fid,key,type] of FIELDS){
@@ -449,6 +472,60 @@ async function writeField(fieldId, type, value){
   else if (type === 'u16'){ bytes = [value & 0xff, (value>>8)&0xff]; }
   else if (type === 'f32'){ const b=new Uint8Array(new Float32Array([value]).buffer); bytes=[...b]; }
   await sendCmd(0x01, [fieldId, ...bytes]);
+}
+
+// --- Bulk field transfer (fw >= 1.4.0) ---
+// One profile apply used to be ~60 individual feature-report round-trips each
+// way; bulk packs many fields per report (write cmd 0x0b, read cmd 0x0c), so an
+// apply or full read is a handful of packets. Falls back to per-field silently
+// on older firmware.
+let bulkSupported = null; // null = unknown, probe on first use
+function encField(type, value){
+  if (type === 'u8')  return [value & 0xff];
+  if (type === 'u16') return [value & 0xff, (value>>8)&0xff];
+  return [...new Uint8Array(new Float32Array([value]).buffer)]; // f32
+}
+function decField(type, bytes){
+  if (type === 'u8')  return bytes[0];
+  if (type === 'u16') return bytes[0] | (bytes[1]<<8);
+  return new Float32Array(new Uint8Array(bytes.slice(0,4)).buffer)[0];
+}
+async function bulkWriteFields(entries){ // entries: [{fid,type,value}] -> true if ALL applied
+  const chunks = []; let cur = [], bytes = 1;
+  for (const e of entries){
+    const b = encField(e.type, e.value), sz = 2 + b.length;
+    if (bytes + sz > 58){ chunks.push(cur); cur = []; bytes = 1; }
+    cur.push({fid: e.fid, b}); bytes += sz;
+  }
+  if (cur.length) chunks.push(cur);
+  for (const ch of chunks){
+    const payload = [ch.length];
+    for (const e of ch) payload.push(e.fid, e.b.length, ...e.b);
+    await sendCmd(0x0b, payload);
+    const r = await readCmdReply(0x0b, undefined, 12);
+    if (!r || r[2] !== 0x00){ return false; }
+  }
+  return true;
+}
+async function bulkReadFields(fieldDefs){ // [[fid,key,type],...] -> {key:value} or null
+  const out = {};
+  for (let i = 0; i < fieldDefs.length; i += 12){
+    const grp = fieldDefs.slice(i, i + 12);
+    await sendCmd(0x0c, [grp.length, ...grp.map(f => f[0])]);
+    const r = await readCmdReply(0x0c, undefined, 12);
+    if (!r || r[2] !== 0x00) return null;
+    let off = 4;
+    const byFid = Object.fromEntries(grp.map(f => [f[0], f]));
+    for (let n = 0; n < r[3]; n++){
+      const fid = r[off], len = r[off+1];
+      const f = byFid[fid];
+      if (f) out[f[1]] = decField(f[2], Array.from(r.slice(off+2, off+2+len)));
+      off += 2 + len;
+    }
+  }
+  // every requested key must be present
+  for (const f of fieldDefs) if (!(f[1] in out)) return null;
+  return out;
 }
 
 async function rebootBootloader(){
@@ -602,7 +679,15 @@ async function saveAll(){
     // Use writeFieldSafe so a stale handle (after a prior reconnect) is detected
     // on the first write and recovered, instead of silently failing.
     const failedFields = [];
-    for (const [fid,key,type] of FIELDS){
+    let bulkDone = false;
+    if (bulkSupported !== false){
+      try {
+        bulkDone = await bulkWriteFields(FIELDS.map(([fid,key,type]) => ({fid, type, value: config[key] ?? 0})));
+        if (bulkDone) bulkSupported = true;
+      } catch(_){ bulkDone = false; }
+      if (!bulkDone && bulkSupported === null) bulkSupported = false;
+    }
+    if (!bulkDone) for (const [fid,key,type] of FIELDS){
       let ok = false;
       for (let a = 0; a < 2 && !ok; a++){
         try { await writeFieldSafe(fid, type, config[key] ?? 0); ok = true; }
@@ -728,7 +813,7 @@ setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && documen
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.1.2</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.5.1</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>

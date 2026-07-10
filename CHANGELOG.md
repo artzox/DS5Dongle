@@ -2,6 +2,167 @@
 
 All notable changes to this project are documented here.
 
+## [1.5.1] — 2026-07-10
+
+### Fixed
+- **Slot-activation page: false failure banners eliminated.** A missing
+  confirmation reply is no longer treated as failure (the activation itself
+  virtually always succeeds; only the reply races - portal tab open, flash-write
+  stall, mid-apply reconnect). The page now shows a blocking banner only when the
+  command could not be SENT at all or the firmware explicitly replies "failed"
+  (genuinely empty slot). An unconfirmed-but-sent activation shows a brief
+  self-closing note instead, and the page refreshes its device handle mid-retries.
+  Re-run ds5-setup.bat (or drop in the updated slot-activate.html) - the fix
+  lives in the generated page.
+- **Out-of-range crossover silently disabled the frequency split.** Entering e.g.
+  500 Hz validated to 0 (= off) with no feedback, making the band gains appear to
+  do nothing. Out-of-range values now clamp to the nearest bound (30/200 Hz)
+  instead. Portal label now also states the valid range and that the crossover
+  must sit below the LP Cutoff (the high band is crossover..cutoff; content above
+  the cutoff never reaches the haptics at all).
+
+## [1.5.0] — 2026-07-10
+
+Auto-haptics frequency split: independent control of what the low and high parts
+of the haptics band contribute.
+
+### Added
+- **Frequency split** (`Crossover Hz`, 0 = off): divides the haptics band at a
+  tunable crossover (30-200 Hz) into a LOW band (impacts, explosions, engine
+  weight) and a HIGH band (crossover..LP cutoff - where music bass lines and
+  voice fundamentals sit), each with its own gain (0-100). Both envelopes feed
+  the SAME gate and 90 Hz carrier, so the felt character is preserved - only the
+  per-band contribution changes. Typical use: crossover ~80 Hz, low 100, high
+  30-50 to keep full impact weight while taming music/dialog-driven buzz.
+- **Off by default and byte-identical when off**: crossover 0 bypasses the split
+  entirely; existing profiles behave exactly as before.
+
+### Notes
+- Band edges are gentle (12 dB/oct), so the two bands overlap softly: gain 0 on a
+  band reduces its content roughly 3-4x rather than to absolute zero - a musical
+  transition rather than a surgical cut.
+
+## [1.4.0] — 2026-07-09
+
+Storage moved out of Bluetooth's flash territory (fixes slots/config corruption on
+controller sleep/wake), plus bulk config transfer for near-instant profile applies.
+
+### Fixed
+- **Profile slot 0 (and potentially more, eventually the config) corrupted by
+  Bluetooth link-key storage.** btstack's TLV flash bank occupies the LAST TWO
+  flash sectors by pico-sdk default — the exact sectors config and slots lived in.
+  Any TLV write (link-key churn on controller sleep/wake or re-pair, the pairing
+  blacklist) could clobber them; the bank header lands at the start of its sector,
+  which was profile slot 0 — hence "first profile shows empty after sleep/wake".
+  Config and slots now live two sectors lower, fully out of the bank's range, and
+  a one-shot boot migration rescues everything still CRC-valid from the legacy
+  locations. Anything the bank already overwrote (typically slot 0) is
+  unrecoverable — re-save that profile once.
+
+### Added
+- **Bulk config transfer** (cmds 0x0b write / 0x0c read): the portal and all
+  exported auto-apply pages now move the whole config in ~5 packets per direction
+  instead of ~60 individual field round-trips each way. A profile apply at game
+  launch completes in a fraction of the previous time — launch-delay workarounds
+  for native games should no longer be needed. Older firmware is auto-detected
+  and falls back to per-field transfer.
+
+## [1.3.3] — 2026-07-09
+
+### Fixed
+- **Triggers stuck in resistance after rapid R2/L2 play (both-gated setups).**
+  The controller only ever received a state report when the host sent one; games
+  that send output reports only when rumble changes go silent between actions, so
+  whichever trigger was engaged at the last report stayed engaged on the
+  controller indefinitely — usually L2 (its gate, R2, is pressed most). A 50 ms
+  synth tick now re-evaluates gating from LIVE trigger positions using the cached
+  host intent and pushes the state whenever it changes, host traffic or not.
+  Bonus: gated resistance now also engages/releases correctly in games that send
+  no rumble at all (previously gating needed host traffic to be felt). Stale
+  cached rumble is zeroed after 300 ms so nothing synthesizes from old data
+  (replaces the old release-only watchdog, which cleared local state but could
+  never transmit the clear).
+
+## [1.3.2] — 2026-07-09
+
+Profile slots now survive firmware upgrades — and this release recovers slots
+that "disappeared" after flashing from 1.1.x.
+
+### Fixed
+- **Profile slots lost on firmware upgrade.** Slot records embedded the raw config
+  body with a CRC spanning its compile-time size — so whenever a firmware upgrade
+  grew the config (new features), older slot records failed validation and read as
+  empty. They were never erased, just unreadable. Slots are now written in a v2
+  format that stores its own body length (future firmware can always validate and
+  read them, missing new fields default sanely), and the loader also recognizes
+  legacy v1 records from config v8/v9/v10 — **slots saved under 1.1.x that were not
+  overwritten since are recovered automatically on first boot of this firmware.**
+- **False "activation failed" banner on first game launch after saving a profile.**
+  The slot-activation page's reply can be lost when another page holds the same
+  device — typically the config portal tab left open right after saving the
+  profile — or during the flash-write USB stall. Activation itself succeeded; only
+  the confirmation raced. The page now retries patiently (4 attempts, growing
+  delays) and, if it still can't confirm, says exactly what to do (close the
+  portal tab and retry) instead of claiming the slot is empty.
+
+## [1.3.1] — 2026-07-09
+
+Fully independent per-trigger adaptive triggers, and a mechanical bow-snap kick.
+
+### Added
+- **Two independent adaptive-trigger sections — R2 and L2.** Each trigger now has
+  its own complete set: mode (Off / Gated / Always-on), resistance strength,
+  arming threshold, start position, kick strength, kick style and kick frequency.
+  "Gated" arms when the OPPOSITE trigger passes that trigger's own threshold
+  (R2 gated = L2 arms it; L2 gated = R2 arms it), with release hysteresis. Any
+  combination works: L2 always + R2 off, L2 always + R2 gated, R2 kicks while L2
+  only resists, different kick styles per trigger, etc. Only "Kick follows" (the
+  envelope source) is shared — it is one signal; per-trigger kick strength 0
+  disables the kick on that trigger.
+- **Bow-snap kick style** (per trigger): the kick can be delivered as the DualSense
+  Bow effect (0x22) instead of the vibration thump — the burst momentarily switches
+  the trigger to Bow, whose snap force physically presses the trigger back against
+  the finger. Sharper, more "recoil" than buzz; the envelope drives the snap force.
+  Experimental: the feel varies with how deep the trigger is held (the snap needs
+  the finger past the bow's end zone — start position + 4).
+
+### Changed
+- `at_target` (1.2.0) and the interim kick mask are superseded by the per-trigger
+  sections and removed.
+- Config version 9 -> 11. Re-check both Adaptive Triggers sections after flashing
+  and re-save any slots that use them.
+
+## [1.2.0] — 2026-07-09
+
+Selective effect leak (band-pass window + anti-flutter gate) and left-trigger
+support for resistance/kick.
+
+### Added
+- **Effect-leak output low-pass** (`effect_leak_lp_hz`, default 3500 Hz). Together
+  with the existing output high-pass this forms a band-pass window — only sound
+  INSIDE the window ever leaks. Both walls are now 12 dB/oct (was a single 6 dB/oct
+  high-pass), so window placement is real selectivity: 400–3500 Hz passes impact
+  bodies while rejecting voice fundamentals below AND the treble sizzle above that
+  previously read as crackle.
+- **Effect-leak gate hold + hysteresis** (`effect_leak_hold`, x5 ms, default
+  100 ms). The transient test used to flicker when the envelope hovered at the
+  threshold — one hit could chatter the gate open/closed ~30 times (each re-open a
+  pop, the hit chopped short). The gate is now a state machine: opens on a clear
+  transient, stays open a minimum hold, closes only when the level falls well below
+  the open threshold. One clean open/close per hit.
+- **Adaptive-trigger target selector** (`at_target`): resistance and kick can now
+  apply to **R2 (L2 gates — default, unchanged)**, **L2 (R2 gates — southpaw /
+  L2-fire layouts)**, or **both (either trigger arms)**. The kick envelope and
+  burst state are computed once per cycle and shared, so both triggers thump in
+  sync. Per-trigger game-ownership yielding is preserved: a game driving one
+  trigger only suppresses synthesis on that trigger.
+
+### Changed
+- Effect-leak output high-pass steepened from 6 to 12 dB/oct (sharper dialog
+  rejection at the same cutoff).
+- Config version 8 -> 9; new fields default sanely on first boot after flashing
+  (existing settings preserved).
+
 ## [1.1.2] — 2026-07-08
 
 Profile slots: complete configurations stored on the dongle, switched with one

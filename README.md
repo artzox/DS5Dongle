@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.1.2**
+**Version 1.5.1**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -88,7 +88,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.1.2.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.5.1.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -121,6 +121,9 @@ surprise; apply them in the portal and save.)
 | Smoothness | 40 |
 | Noise Gate | 20 |
 | LP Cutoff (Hz) | 100 |
+| Frequency Split Crossover | 0 / 30-200 Hz | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-1.5.1) |
+| Low Band Gain | 0-100 | 100 | Contribution of content BELOW the crossover (impacts, explosions) |
+| High Band Gain | 0-100 | 100 | Contribution of the crossover..cutoff range (music bass, voice fundamentals) - lower it to tame music/dialog buzz |
 | Filter Slope | 12 dB/oct |
 | Auto-mute Speaker (Replace) | Yes |
 | Auto-mute Speaker (Mix) | Yes |
@@ -131,6 +134,8 @@ surprise; apply them in the portal and save.)
 | Effect Leak Decay/Fade-out | 80 |
 | Effect Leak Attack/Responsiveness | 50 |
 | Effect Leak Output High-pass (Hz) | 1000 |
+| Effect Leak Output Low-pass | 500–12000 Hz | 3500 | High wall of the leak window (12 dB/oct); kills treble sizzle/crackle. With the high-pass forms the band-pass "capture window" — only sound inside it leaks |
+| Effect Leak Gate Hold | 0–100 (x5 ms) | 20 (100 ms) | Minimum gate-open time per transient + hysteresis; stops the gate chattering (choppy/poppy leak) |
 | Effect Leak Detection Band (Hz) | 2500 |
 
 **Haptics & Audio**
@@ -228,13 +233,16 @@ trigger effects, R2T yields to it by default (see *Force Override* below).
 ### Adaptive Triggers (Stage 1: resistance, Stage 2: push-back kick)
 L2-gated constant resistance on R2 — hold the aim trigger and R2 stiffens. On top
 of that, the push-back kick delivers recoil: while resistance is engaged, each
-rumble/haptics burst momentarily switches R2 to a low-frequency vibration thump
+rumble/haptics burst momentarily switches the kicking trigger(s) to a low-frequency vibration thump (or a Bow-effect snap, see Kick style)
 that knocks the trigger back against your finger, then resistance resumes as the
 burst fades (hysteresis prevents chatter at the threshold).
 
 | Setting | Range | Default | Notes |
 |---|---|---|---|
-| AT Mode | Off / L2-gated / Always-on | Off | L2-gated = R2 resists only while L2 is held past the threshold; Always-on = R2 always resists |
+| Mode (per trigger) | Off / Gated / Always | Off | Each trigger has its own section. Gated = the OPPOSITE trigger arms it (R2 gated = L2 arms; L2 gated = R2 arms). Any combination is valid |
+| Kick strength (per trigger) | 0-100 | R2: 0, L2: 0 | 0 = no kick on that trigger; e.g. R2 kicks on fire while L2 only resists |
+| Kick style (per trigger) | Thump / Bow snap | Thump | Thump = vibration buzz (0x26). Bow snap = mechanical push-back via the Bow effect (0x22): the snap force presses the trigger back against the finger - sharper recoil, experimental (feel varies with hold depth) |
+| Kick follows | Rumble / Audio / Both | Both | Shared envelope source for both triggers (one signal) |
 | Strength | 0–100 | 70 | Resistance intensity (mapped to the effect's 0–7 range) |
 | Arm Threshold | 1–255 | 30 | How far L2 must be pulled to arm R2 resistance (~12% at default) |
 | Start Position | 0–9 | 0 | Trigger-travel zone where resistance begins (0 = from the start) |
@@ -452,16 +460,16 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.1.2.uf2` — the firmware (flash this; reports version 1.1.2)
+- `ds5-v1.5.1.uf2` — the firmware (flash this; reports version 1.5.1)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
-- `ds5dongle-v1.0.9-to-v1.1.2.patch` — incremental diff for the 1.1.0–1.1.2
+- `ds5dongle-v1.0.9-to-v1.5.1.patch` — incremental diff for the 1.1.0–1.5.1
   firmware and portal changes (apply on top of the v1.0.9 patch)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.1.2)
+- `README.md` — this file (docs version 1.5.1)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
