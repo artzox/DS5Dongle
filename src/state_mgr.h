@@ -7,7 +7,7 @@
 #include <cstdint>
 
 void state_init();
-void synth_watchdog();
+bool state_synth_tick(); // main loop: recompose from live positions + cached host intent; true = state changed, push it
 void state_set(uint8_t *data, uint8_t size);
 bool state_update(const uint8_t *data, uint8_t size);
 void set_volume(uint8_t value);

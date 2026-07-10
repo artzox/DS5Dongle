@@ -43,29 +43,38 @@ SetStateData state{};
 volatile uint8_t g_diag_synth = 0;
 volatile uint8_t g_diag_at_env = 0; // live push-back envelope (0-255), diag field 0x3c
 // Synthesized-trigger bookkeeping (file scope so the staleness watchdog can see it).
-static bool synth_owned_l2 = false, synth_owned_r2 = false, at_engaged = false;
-static uint32_t g_last_state_update_ms = 0;
+static bool synth_owned_l2 = false, synth_owned_r2 = false, at_engaged = false, at_engaged_l2 = false;
+// Host-report cache for the synth tick. The controller only ever receives a
+// state report when we compose+send one; historically that happened ONLY on host
+// output reports. Games that send reports solely when rumble changes go silent
+// between actions - so a trigger that engaged during the action stayed engaged on
+// the controller forever (stuck resistance), and gated engagement from live
+// trigger movement could never transmit either. state_synth_tick() (main loop)
+// replays the cached host intent with live trigger positions and lets main push
+// the result whenever it actually changed.
+static uint8_t  g_host_cache[sizeof(SetStateData)];
+static uint8_t  g_host_cache_size = 0;
+static uint32_t g_last_host_ms = 0;
 
-// Called from the main loop: if the host stops sending output reports while a
-// synthesized trigger effect is active, the last effect would stay applied to the
-// controller indefinitely (felt as phantom tension/"resistance" on an idle
-// trigger). Release after 300 ms of silence.
-void synth_watchdog() {
-    if (!synth_owned_l2 && !synth_owned_r2) return;
+static bool state_update_apply(const uint8_t *data, uint8_t size);
+
+bool state_synth_tick() {
+    if (!g_host_cache_size) return false;                  // no host intent cached yet
     const uint32_t now = to_ms_since_boot(get_absolute_time());
-    if (now - g_last_state_update_ms < 300) return;
-    // Clear our footprint AND the Allow bits (byte 0) so the report returns to its
-    // native value — see the release_* helpers for why setting the bit is wrong.
-    if (synth_owned_l2) {
-        for (int i = 0; i < 11; ++i) state.LeftTriggerFFB[i] = 0;
-        state.AllowLeftTriggerFFB = 0; synth_owned_l2 = false;
+    if (now - g_last_host_ms < 50) return false;           // host actively driving
+    alignas(4) static uint8_t copy[sizeof(SetStateData)];
+    memcpy(copy, g_host_cache, g_host_cache_size);
+    if (now - g_last_host_ms >= 300) {
+        // Stale rumble must not keep synthesizing (old watchdog semantics): zero
+        // the cached rumble so r2t and the rumble-fed kick decay naturally, while
+        // AT gating keeps re-evaluating from LIVE trigger positions.
+        auto *u = reinterpret_cast<SetStateData *>(copy);
+        u->EnableRumbleEmulation = 0;
+        u->EnableImprovedRumbleEmulation = 0;
+        u->RumbleEmulationRight = 0;
+        u->RumbleEmulationLeft = 0;
     }
-    if (synth_owned_r2) {
-        for (int i = 0; i < 11; ++i) state.RightTriggerFFB[i] = 0;
-        state.AllowRightTriggerFFB = 0; synth_owned_r2 = false;
-    }
-    at_engaged = false;
-    g_diag_synth &= (uint8_t)~(4 | 8 | 16);
+    return state_update_apply(copy, g_host_cache_size);
 }
 
 void state_init() {
@@ -97,6 +106,15 @@ void __not_in_flash_func(state_set)(uint8_t *data, const uint8_t size) {
 }
 
 bool state_update(const uint8_t *data, const uint8_t size) {
+    if (size <= sizeof(SetStateData)) {
+        memcpy(g_host_cache, data, size);
+        g_host_cache_size = size;
+        g_last_host_ms = to_ms_since_boot(get_absolute_time());
+    }
+    return state_update_apply(data, size);
+}
+
+static bool state_update_apply(const uint8_t *data, const uint8_t size) {
     if (size > sizeof(SetStateData)) {
         printf(
             "[StateMgr] Error: SetStateData max %u bytes, request %u\n",
@@ -234,7 +252,6 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         static uint32_t last_game_r2_ms = 0, last_game_l2_ms = 0;
         static bool game_ever_r2 = false, game_ever_l2 = false;
         const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-        g_last_state_update_ms = now_ms;
         // A game "actively drives" a trigger only if the Allow bit comes WITH a real
         // effect payload. Input layers (Steam Input, DS4Windows-style wrappers, some
         // games) set the Allow bits in EVERY output report with an empty/Off payload
@@ -294,23 +311,111 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         const bool r2t_wants_l2 = (cfg.r2t_mode == 1 || cfg.r2t_mode == 3);
         const bool r2t_wants_r2 = (cfg.r2t_mode == 2 || cfg.r2t_mode == 3);
 
-        // at: L2-gated R2 resistance, with hysteresis so hovering at the threshold
-        // doesn't chatter the trigger motor. r2t has priority on R2 if both enabled.
+        // at: gated resistance with hysteresis so hovering at the threshold doesn't
+        // chatter the trigger motor. r2t has priority conflict resolution below.
+        // Per-trigger modes (v1.2.1): each trigger has its own independent mode —
+        //   at_mode    = R2: 0=off, 1=gated (L2 arms it), 2=always on
+        //   at_l2_mode = L2: 0=off, 1=gated (R2 arms it), 2=always on
+        // "Gated" arms when the OPPOSITE trigger passes at_threshold, with the same
+        // release hysteresis. Any combination is valid: L2 always + R2 gated,
+        // L2 always + R2 off, both gated (each armed by the other), etc.
         extern volatile uint8_t g_l2_pos, g_r2_pos;
-        bool at_wants_r2 = false;
-        if (cfg.at_mode >= 1 && cfg.at_strength > 0) {
-            if (cfg.at_mode == 2) {
-                at_engaged = true;                      // always on
-            } else {                                    // mode 1: L2-gated + hysteresis
-                const uint8_t thr = cfg.at_threshold;
-                const uint8_t rel = (thr > 15) ? (uint8_t)(thr - 15) : 1;
-                if (!at_engaged && g_l2_pos >= thr)      at_engaged = true;
-                else if (at_engaged && g_l2_pos < rel)   at_engaged = false;
+        auto at_engage = [&](uint8_t mode, uint8_t gate_pos, uint8_t thr, uint8_t strength, bool &engaged) -> bool {
+            if (mode == 0 || strength == 0) { engaged = false; return false; }
+            if (mode == 2) { engaged = true; return true; }     // always on
+            const uint8_t rel = (thr > 15) ? (uint8_t)(thr - 15) : 1; // mode 1: gated + hysteresis
+            if (!engaged && gate_pos >= thr)     engaged = true;
+            else if (engaged && gate_pos < rel)  engaged = false;
+            return engaged;
+        };
+        const bool at_wants_r2 = at_engage(cfg.at_mode > 2 ? 0 : cfg.at_mode, g_l2_pos, cfg.at_threshold, cfg.at_strength, at_engaged);
+        const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 2 ? 0 : cfg.at_l2_mode, g_r2_pos, cfg.at_l2_threshold, cfg.at_l2_strength, at_engaged_l2);
+
+        // -- Stage 2 kick: computed ONCE per cycle (shared envelope + burst state),
+        // then written to whichever target trigger(s) are engaged. See the Stage 2
+        // comment below for the mechanism (vibration burst instead of static force).
+        bool at_kick_now = false;      // shared burst state (envelope is one signal)
+        uint8_t at_kick_r2_amp3 = 0;   // per-trigger kick amplitudes from their own strengths
+        uint8_t at_kick_l2_amp3 = 0;
+        const bool r2_kick_cfg = at_wants_r2 && cfg.at_pushback > 0;
+        const bool l2_kick_cfg = at_wants_l2 && cfg.at_l2_pushback > 0;
+        if (r2_kick_cfg || l2_kick_cfg) {
+            uint16_t env = 0; // vibration envelope, 0-255
+            if (cfg.at_pushback_src == 0 || cfg.at_pushback_src == 2) {
+                const uint8_t hr = update.EnableRumbleEmulation ? update.RumbleEmulationRight : 0;
+                const uint8_t hl = update.EnableRumbleEmulation ? update.RumbleEmulationLeft  : 0;
+                extern volatile uint8_t g_rumble_l, g_rumble_r; // converted-rumble path
+                const uint8_t g = (g_rumble_l > g_rumble_r) ? g_rumble_l : g_rumble_r;
+                const uint8_t h = (hr > hl) ? hr : hl;
+                env = (h > g) ? h : g;
             }
-            at_wants_r2 = at_engaged;
-        } else {
-            at_engaged = false;
+            if (cfg.at_pushback_src >= 1) {
+                extern volatile uint16_t g_diag_ch01_peak; // live auto-haptics input peak (0-32767)
+                uint16_t a = (uint16_t)(g_diag_ch01_peak >> 7); // -> 0-255
+                if (a > 255) a = 255;
+                if (a > env) env = a;
+            }
+            g_diag_at_env = (uint8_t)env;
+            static bool     kick_on = false;
+            static uint32_t kick_hold_until_ms = 0;
+            if (!kick_on && env >= 32) { kick_on = true; kick_hold_until_ms = now_ms + 45; }
+            else if (kick_on && env < 16 && (int32_t)(now_ms - kick_hold_until_ms) >= 0) kick_on = false;
+            if (kick_on) {
+                auto scale3 = [&](uint8_t strength) -> uint8_t {
+                    uint32_t a = ((uint32_t)env * strength * 7u + 12750u) / 25500u;
+                    return (uint8_t)((a > 7) ? 7 : a);
+                };
+                if (r2_kick_cfg) at_kick_r2_amp3 = scale3(cfg.at_pushback);
+                if (l2_kick_cfg) at_kick_l2_amp3 = scale3(cfg.at_l2_pushback);
+                at_kick_now = (at_kick_r2_amp3 > 0) || (at_kick_l2_amp3 > 0);
+            }
+        } else if (at_wants_r2 || at_wants_l2) {
+            g_diag_at_env = 0;
         }
+
+        // -- AT effect writer: kick burst (Vibration) while hot, else constant
+        // resistance (Feedback). Written identically to each target trigger.
+        auto write_at = [&](uint8_t *ffb, uint8_t strength, uint8_t start_pos,
+                            uint8_t kick_amp3, uint8_t kick_style, uint8_t kick_freq) {
+            for (int i = 0; i < 11; ++i) ffb[i] = 0;
+            if (at_kick_now && kick_amp3 > 0) {
+                if (kick_style == 1) {
+                    // Bow snap (0x22): start/end zone pair + strength/snap-force
+                    // pair. With the trigger already held past the end zone, the
+                    // snap force presses the trigger back against the finger for
+                    // the duration of the burst — a mechanical recoil rather than
+                    // a buzz. Layout (Nielk1 factory recipe): bytes 1-2 = 16-bit
+                    // zone mask (1<<start | 1<<end); byte 3 = ((strength-1)&7) |
+                    // (((snapForce-1)&7)<<3), both 1-8 on the wire as value-1.
+                    ffb[0] = 0x22;
+                    uint8_t bstart = (start_pos > 7) ? 7 : start_pos;
+                    uint8_t bend = (uint8_t)(bstart + 4); if (bend > 8) bend = 8;
+                    const uint16_t zones = (uint16_t)((1u << bstart) | (1u << bend));
+                    ffb[1] = (uint8_t)(zones & 0xFF);
+                    ffb[2] = (uint8_t)((zones >> 8) & 0xFF);
+                    uint8_t wire = (uint8_t)(((uint16_t)strength * 7u + 50u) / 100u);
+                    if (wire > 7) wire = 7;               // strength-1 (draw resistance)
+                    ffb[3] = (uint8_t)((wire & 0x07) | ((kick_amp3 & 0x07) << 3)); // snapForce-1 = envelope
+                } else {
+                    ffb[0] = 0x26;                    // Vibration: the recoil thump
+                    const uint16_t vz = 0x03FF;       // full travel
+                    ffb[1] = (uint8_t)(vz & 0xFF);
+                    ffb[2] = (uint8_t)((vz >> 8) & 0x03);
+                    pack_zones(ffb, vz, kick_amp3);
+                    ffb[9] = kick_freq;               // low = heavier knock
+                }
+            } else {
+                ffb[0] = 0x21; // Feedback (constant resistance)
+                const uint8_t start = (start_pos > 9) ? 0 : start_pos;
+                uint16_t zones = 0;
+                for (int z = start; z <= 9; ++z) zones |= (1u << z);
+                ffb[1] = (uint8_t)(zones & 0xFF);
+                ffb[2] = (uint8_t)((zones >> 8) & 0x03);
+                uint8_t wire = (uint8_t)(((uint16_t)strength * 7u + 50u) / 100u);
+                if (wire > 7) wire = 7;
+                pack_zones(ffb, zones, wire);
+            }
+        };
 
         // -- release helper: remove OUR footprint from the persistent state.
         // Clears the FFB bytes we wrote and drops our claim. It clears the Allow bit
@@ -334,8 +439,15 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         };
 
         // -- LEFT trigger --
+        // Priority mirrors R2: game > resistance/kick (if targeted) > vibration.
         if (game_owns_l2) {
             release_left(true);      // game drives it: drop our claim, keep its effect
+        } else if (at_wants_l2) {
+            write_at(state.LeftTriggerFFB, cfg.at_l2_strength, cfg.at_l2_start_pos,
+                     at_kick_l2_amp3, cfg.at_l2_kick_style, cfg.at_l2_pushback_freq);
+            at_kick_diag = at_kick_diag || (at_kick_l2_amp3 > 0);
+            state.AllowLeftTriggerFFB = 1;
+            synth_owned_l2 = true;
         } else if (r2t_wants_l2) {
             // Only trust the rumble bytes when the host says they're valid — apps send
             // reports for other purposes (LED, volume) where these offsets carry stale
@@ -355,67 +467,19 @@ bool state_update(const uint8_t *data, const uint8_t size) {
         if (game_owns_r2) {
             release_right(true);
         } else if (at_wants_r2) {
-            uint8_t *ffb = state.RightTriggerFFB;
-            for (int i = 0; i < 11; ++i) ffb[i] = 0;
             // -- Stage 2: push-back kick (recoil) --
             // A static change in Feedback strength is barely perceptible under a
             // finger that already holds the trigger, so the kick is delivered as
             // a LOW-FREQUENCY VIBRATION BURST instead: while the vibration
-            // envelope is hot, the R2 slot temporarily switches from Feedback
+            // envelope is hot, the trigger slot temporarily switches from Feedback
             // (resistance) to Vibration (recoil thump) and drops back to
             // resistance as the burst fades. Hysteresis (on >= 32, off < 16) plus
             // a 45 ms minimum burst stop mode chatter around the threshold.
-            // at_pushback == 0 leaves Stage 1 byte-identical.
-            bool kick_now = false;
-            if (cfg.at_pushback > 0) {
-                uint16_t env = 0; // vibration envelope, 0-255
-                if (cfg.at_pushback_src == 0 || cfg.at_pushback_src == 2) {
-                    const uint8_t hr = update.EnableRumbleEmulation ? update.RumbleEmulationRight : 0;
-                    const uint8_t hl = update.EnableRumbleEmulation ? update.RumbleEmulationLeft  : 0;
-                    extern volatile uint8_t g_rumble_l, g_rumble_r; // converted-rumble path
-                    const uint8_t g = (g_rumble_l > g_rumble_r) ? g_rumble_l : g_rumble_r;
-                    const uint8_t h = (hr > hl) ? hr : hl;
-                    env = (h > g) ? h : g;
-                }
-                if (cfg.at_pushback_src >= 1) {
-                    extern volatile uint16_t g_diag_ch01_peak; // live auto-haptics input peak (0-32767)
-                    uint16_t a = (uint16_t)(g_diag_ch01_peak >> 7); // -> 0-255
-                    if (a > 255) a = 255;
-                    if (a > env) env = a;
-                }
-                g_diag_at_env = (uint8_t)env;
-                static bool     kick_on = false;
-                static uint32_t kick_hold_until_ms = 0;
-                if (!kick_on && env >= 32) { kick_on = true; kick_hold_until_ms = now_ms + 45; }
-                else if (kick_on && env < 16 && (int32_t)(now_ms - kick_hold_until_ms) >= 0) kick_on = false;
-                if (kick_on) {
-                    uint32_t amp3 = ((uint32_t)env * cfg.at_pushback * 7u + 12750u) / 25500u;
-                    if (amp3 > 7) amp3 = 7;
-                    if (amp3 > 0) {
-                        kick_now = true;
-                        ffb[0] = 0x26;                    // Vibration: the recoil thump
-                        const uint16_t vz = 0x03FF;       // full travel
-                        ffb[1] = (uint8_t)(vz & 0xFF);
-                        ffb[2] = (uint8_t)((vz >> 8) & 0x03);
-                        pack_zones(ffb, vz, (uint8_t)amp3);
-                        ffb[9] = cfg.at_pushback_freq;    // low = heavier knock
-                    }
-                }
-            } else {
-                g_diag_at_env = 0;
-            }
-            if (!kick_now) {
-                ffb[0] = 0x21; // Feedback (constant resistance)
-                const uint8_t start = (cfg.at_start_pos > 9) ? 0 : cfg.at_start_pos;
-                uint16_t zones = 0;
-                for (int z = start; z <= 9; ++z) zones |= (1u << z);
-                ffb[1] = (uint8_t)(zones & 0xFF);
-                ffb[2] = (uint8_t)((zones >> 8) & 0x03);
-                uint8_t wire = (uint8_t)(((uint16_t)cfg.at_strength * 7u + 50u) / 100u);
-                if (wire > 7) wire = 7;
-                pack_zones(ffb, zones, wire);
-            }
-            at_kick_diag = kick_now;
+            // at_pushback == 0 leaves Stage 1 byte-identical. The envelope and
+            // burst state are computed once per cycle above (shared with L2).
+            write_at(state.RightTriggerFFB, cfg.at_strength, cfg.at_start_pos,
+                     at_kick_r2_amp3, cfg.at_kick_style, cfg.at_pushback_freq);
+            at_kick_diag = at_kick_diag || (at_kick_r2_amp3 > 0);
             state.AllowRightTriggerFFB = 1;
             synth_owned_r2 = true;
         } else if (r2t_wants_r2) {

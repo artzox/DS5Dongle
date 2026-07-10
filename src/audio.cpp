@@ -225,6 +225,24 @@ void __not_in_flash_func(audio_loop)() {
     static float lp2_l = 0.0f, lp2_r = 0.0f; // cascade stages for steeper slopes
     static float lp3_l = 0.0f, lp3_r = 0.0f;
     static float lp4_l = 0.0f, lp4_r = 0.0f;
+    // Frequency split (v1.5.0): xover 0 = OFF -> the block below is bypassed and
+    // the single-band path is byte-identical to previous firmware. When ON, a
+    // 12 dB/oct LP at the crossover carves the LOW band out of the input; the
+    // HIGH band is the existing filtered signal minus the low band (i.e. the
+    // crossover..LP-cutoff range). Each band gets its own envelope, weighted by
+    // its gain, then summed into the SAME gate + carrier chain - so the felt
+    // character is unchanged, only the per-band contribution is adjustable.
+    uint16_t xover_fc = get_config().ah_xover_hz;
+    const bool split_on = (auto_mode > 0) && xover_fc >= 30 && xover_fc <= 200;
+    static float xo_a = 0.0f; static uint16_t xo_fc_cached = 0;
+    if (split_on && xover_fc != xo_fc_cached) {
+        xo_fc_cached = xover_fc;
+        xo_a = 1.0f - expf(-2.0f * (float)M_PI * (float)xover_fc / 48000.0f);
+    }
+    static float xo1_l = 0.0f, xo2_l = 0.0f, xo1_r = 0.0f, xo2_r = 0.0f; // split LP stages
+    static float envlo_l = 0.0f, envlo_r = 0.0f, envhi_l = 0.0f, envhi_r = 0.0f;
+    const float split_lo_g = get_config().ah_low_gain  / 100.0f;
+    const float split_hi_g = get_config().ah_high_gain / 100.0f;
     static float lp_h_l = 0.0f, lp_h_r = 0.0f; // LP memory for native haptic ch2/3 (Mix mode)
     static float env_l = 0.0f, env_r = 0.0f;
     constexpr float ENV_ATK = 0.15f;
@@ -249,14 +267,27 @@ void __not_in_flash_func(audio_loop)() {
     // Detection runs on a high-passed copy so low-frequency dialog onsets don't
     // trigger it. The configured "high-pass" value doubles as the detection band.
     static float hp_l = 0.0f, hp_r = 0.0f;          // high-pass state (for detection input)
-    static float ohp_l = 0.0f, ohp_r = 0.0f;        // output high-pass state (speaker protection)
-    // Output high-pass: the controller speaker is a tiny driver that can't
-    // reproduce deep bass — feeding it low frequencies makes the cone hit its
-    // excursion limit and POP/distort. Strip the lows from the OUTPUT (separate
-    // from the detection high-pass) so the speaker only gets what it can play.
-    // Configurable cutoff; ~150-300 Hz is typically enough to stop popping.
+    // Output BAND-PASS window (v1.2.0): the leak output passes through a 12 dB/oct
+    // high-pass (low wall — speaker pop protection + dialog-fundamental rejection)
+    // followed by a 12 dB/oct low-pass (high wall — kills the treble sizzle/click
+    // that made the leak crackly). Only sound INSIDE the window ever leaks, so the
+    // window placement IS the selectivity: e.g. 400-3500 Hz passes impacts and
+    // effect bodies while rejecting both voice fundamentals and hiss/sparkle.
+    static float ohp1_l = 0.0f, ohp2_l = 0.0f, ohp1_r = 0.0f, ohp2_r = 0.0f; // 2-stage HP
+    static float olp1_l = 0.0f, olp2_l = 0.0f, olp1_r = 0.0f, olp2_r = 0.0f; // 2-stage LP
     const float ohp_fc = (float)get_config().effect_leak_output_hp_hz;
     const float ohp_a = 1.0f - expf(-2.0f * (float)M_PI * ohp_fc / 48000.0f);
+    const float olp_fc = (float)get_config().effect_leak_lp_hz;
+    const float olp_a = 1.0f - expf(-2.0f * (float)M_PI * olp_fc / 48000.0f);
+    // Gate hold + hysteresis (v1.2.0): once a transient opens the gate, keep it
+    // open a minimum time (hold) and only close when the level falls clearly below
+    // the OPEN threshold (hysteresis). Without this the transient test flickers
+    // when the envelope hovers at the threshold — the gate chatters open/closed,
+    // which is exactly the "missing and poppy" artifact: hits get chopped short
+    // (missing) and each re-open clicks (poppy).
+    const uint32_t hold_samples = (uint32_t)get_config().effect_leak_hold * 240u; // x5 ms @48kHz
+    static bool     gate_open = false;
+    static uint32_t hold_left = 0;
     static float env_fast = 0.0f, env_slow = 0.0f;  // fast/slow level envelopes
     static float leak_gain = 0.0f;                   // smoothed open/close gain
     const float hp_fc = (float)get_config().effect_leak_hp_hz;
@@ -299,19 +330,35 @@ void __not_in_flash_func(audio_loop)() {
             // Fast envelope reacts to onsets; slow envelope tracks the baseline.
             env_fast += ((mag > env_fast) ? ENV_FAST_A : ENV_FAST_A*0.25f) * (mag - env_fast);
             env_slow += ENV_SLOW_A * (mag - env_slow);
-            // Transient when the fast envelope jumps well above the slow baseline.
-            const bool transient = (env_fast > env_slow * TRANS_RATIO + 0.0008f);
-            const float target = transient ? 1.0f : 0.0f;
+            // Gate state machine with hysteresis + minimum hold. OPEN on a clear
+            // transient; once open, stay open at least `hold_samples`, then close
+            // only when the level drops well below the open threshold (0.65x). The
+            // gate makes one clean open/close per hit instead of chattering.
+            if (!gate_open) {
+                if (env_fast > env_slow * TRANS_RATIO + 0.0008f) {
+                    gate_open = true;
+                    hold_left = hold_samples;
+                }
+            } else {
+                if (hold_left > 0) hold_left--;
+                else if (env_fast <= env_slow * (TRANS_RATIO * 0.65f) + 0.0006f)
+                    gate_open = false;
+            }
+            const float target = gate_open ? 1.0f : 0.0f;
             leak_gain += ((target > leak_gain) ? GATE_OPEN : GATE_CLOSE) * (target - leak_gain);
-            // Output the FULL-BAND audio, smoothly gated by the transient detector,
-            // but first high-pass it to remove the deep bass that pops the speaker.
-            // (Detection used the full content; output is protected.)
-            ohp_l += ohp_a * (in_l - ohp_l);
-            ohp_r += ohp_a * (in_r - ohp_r);
-            const float out_l = in_l - ohp_l; // high-passed (lows removed)
-            const float out_r = in_r - ohp_r;
-            spk_l_out = out_l * leak_gain * leak_vol;
-            spk_r_out = out_r * leak_gain * leak_vol;
+            // Band-pass the output: 12 dB/oct high-pass (two cascaded poles) removes
+            // speaker-popping lows and voice fundamentals; 12 dB/oct low-pass removes
+            // the treble sizzle that reads as crackle. Only the window leaks.
+            ohp1_l += ohp_a * (in_l - ohp1_l);  float bp_l = in_l - ohp1_l;
+            ohp2_l += ohp_a * (bp_l - ohp2_l);  bp_l -= ohp2_l;
+            ohp1_r += ohp_a * (in_r - ohp1_r);  float bp_r = in_r - ohp1_r;
+            ohp2_r += ohp_a * (bp_r - ohp2_r);  bp_r -= ohp2_r;
+            olp1_l += olp_a * (bp_l - olp1_l);
+            olp2_l += olp_a * (olp1_l - olp2_l);
+            olp1_r += olp_a * (bp_r - olp1_r);
+            olp2_r += olp_a * (olp1_r - olp2_r);
+            spk_l_out = olp2_l * leak_gain * leak_vol;
+            spk_r_out = olp2_r * leak_gain * leak_vol;
         } else {
             spk_l_out = raw[i * actual_ch]     / 32768.0f * spk_gain;
             spk_r_out = raw[i * actual_ch + 1] / 32768.0f * spk_gain;
@@ -364,6 +411,25 @@ void __not_in_flash_func(audio_loop)() {
             const float abs_r = fr < 0.0f ? -fr : fr;
             env_l = (abs_l > env_l) ? env_l + ENV_ATK*(abs_l-env_l) : env_l + ENV_REL*(abs_l-env_l);
             env_r = (abs_r > env_r) ? env_r + ENV_ATK*(abs_r-env_r) : env_r + ENV_REL*(abs_r-env_r);
+            float use_env_l = env_l, use_env_r = env_r;
+            if (split_on) {
+                // Low band: 12 dB/oct LP at the crossover on the raw input.
+                xo1_l += xo_a * (spk_l - xo1_l); xo2_l += xo_a * (xo1_l - xo2_l);
+                xo1_r += xo_a * (spk_r - xo1_r); xo2_r += xo_a * (xo1_r - xo2_r);
+                const float lo_l = xo2_l,      lo_r = xo2_r;
+                // High band: everything the main LP kept, minus the low band
+                // (phase ripple from the subtraction is irrelevant - only the
+                // band's ENVELOPE is used, never its waveform).
+                const float hi_l = fl - lo_l,  hi_r = fr - lo_r;
+                const float alo_l = lo_l < 0 ? -lo_l : lo_l, alo_r = lo_r < 0 ? -lo_r : lo_r;
+                const float ahi_l = hi_l < 0 ? -hi_l : hi_l, ahi_r = hi_r < 0 ? -hi_r : hi_r;
+                envlo_l = (alo_l > envlo_l) ? envlo_l + ENV_ATK*(alo_l-envlo_l) : envlo_l + ENV_REL*(alo_l-envlo_l);
+                envlo_r = (alo_r > envlo_r) ? envlo_r + ENV_ATK*(alo_r-envlo_r) : envlo_r + ENV_REL*(alo_r-envlo_r);
+                envhi_l = (ahi_l > envhi_l) ? envhi_l + ENV_ATK*(ahi_l-envhi_l) : envhi_l + ENV_REL*(ahi_l-envhi_l);
+                envhi_r = (ahi_r > envhi_r) ? envhi_r + ENV_ATK*(ahi_r-envhi_r) : envhi_r + ENV_REL*(ahi_r-envhi_r);
+                use_env_l = envlo_l * split_lo_g + envhi_l * split_hi_g;
+                use_env_r = envlo_r * split_lo_g + envhi_r * split_hi_g;
+            }
             // Noise gate with SMOOTHED gain: a hard gate flickers on/off when the
             // bass envelope hovers near the threshold, chopping the output (jagged
             // feel). Compute a target gate gain, then slew toward it so the gate
@@ -374,16 +440,16 @@ void __not_in_flash_func(audio_loop)() {
             static float gsm_l = 0.0f, gsm_r = 0.0f; // smoothed gate gain memory
             // Gate slew: ~5 ms open, ~60 ms close, at 48 kHz frame rate.
             constexpr float GATE_OPEN = 0.20f, GATE_CLOSE = 0.02f;
-            float genv_l = env_l, genv_r = env_r;
+            float genv_l = use_env_l, genv_r = use_env_r;
             if (GATE_THRESH > 0.0f) {
-                float tgt_l = (env_l - GATE_THRESH) / GATE_KNEE;
-                float tgt_r = (env_r - GATE_THRESH) / GATE_KNEE;
+                float tgt_l = (use_env_l - GATE_THRESH) / GATE_KNEE;
+                float tgt_r = (use_env_r - GATE_THRESH) / GATE_KNEE;
                 tgt_l = tgt_l < 0.0f ? 0.0f : (tgt_l > 1.0f ? 1.0f : tgt_l);
                 tgt_r = tgt_r < 0.0f ? 0.0f : (tgt_r > 1.0f ? 1.0f : tgt_r);
                 gsm_l += ((tgt_l > gsm_l) ? GATE_OPEN : GATE_CLOSE) * (tgt_l - gsm_l);
                 gsm_r += ((tgt_r > gsm_r) ? GATE_OPEN : GATE_CLOSE) * (tgt_r - gsm_r);
-                genv_l = env_l * gsm_l;
-                genv_r = env_r * gsm_r;
+                genv_l = use_env_l * gsm_l;
+                genv_r = use_env_r * gsm_r;
             }
             // Bass envelope amplitude-modulates a 90 Hz carrier so the voice-coil
             // actuator can render it (a near-DC low-passed signal produces no

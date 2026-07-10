@@ -69,6 +69,41 @@ struct __attribute__((packed)) Config_body {
     uint8_t at_pushback;     // [0-100] kick strength; 0=off (Stage 1 behavior unchanged)
     uint8_t at_pushback_src; // envelope source: 0=rumble only, 1=audio haptics only, 2=both (max)
     uint8_t at_pushback_freq;// [10-200] vibration frequency of the kick thump; lower = heavier knock (default 35)
+    // Effect-leak band-pass window + gate hold (v1.2.0). The output high-pass
+    // (effect_leak_output_hp_hz) forms the LOW wall of the window; this low-pass
+    // is the HIGH wall. Both are 12 dB/oct. Sound outside the window never leaks,
+    // which is what makes the leak selective instead of "thin treble = crackle".
+    uint16_t effect_leak_lp_hz; // output low-pass cutoff (Hz); default 3500
+    uint8_t  effect_leak_hold;  // [0-100] min gate-open hold after a transient (x5 = 0-500 ms); stops flutter ("missing and poppy")
+    // Per-trigger adaptive-trigger modes (v1.2.1). Each trigger has its own mode;
+    // strength/threshold/start-position/kick parameters are shared. "Gated" means
+    // armed by the OPPOSITE trigger passing at_threshold (R2 gated = L2 arms it,
+    // L2 gated = R2 arms it), with the same hysteresis as before.
+    // Fully independent per-trigger adaptive triggers (v1.3.1). The at_* fields
+    // above (mode/strength/threshold/start/pushback/freq) are R2's; the at_l2_*
+    // fields below are L2's own complete set. Only at_pushback_src (the kick
+    // envelope source) is shared — it's one signal. Per-trigger kick strength 0
+    // simply disables the kick on that trigger.
+    uint8_t  at_kick_style;      // R2 kick delivery: 0=vibration thump (0x26), 1=bow snap (0x22) — the
+                                 // bow's snap force physically presses the trigger back (sharper; feel
+                                 // varies with hold depth).
+    uint8_t  at_l2_mode;         // L2: 0=off (default), 1=gated (R2 arms), 2=always on
+    uint8_t  at_l2_strength;     // L2 resistance strength [0-100]
+    uint8_t  at_l2_threshold;    // R2 press depth that arms L2 in gated mode [1-255]
+    uint8_t  at_l2_start_pos;    // L2 resistance start zone [0-9]
+    uint8_t  at_l2_pushback;     // L2 kick strength [0-100]; 0 = no kick on L2
+    uint8_t  at_l2_pushback_freq;// L2 kick thump frequency [10-200]
+    uint8_t  at_l2_kick_style;   // L2 kick delivery: 0=thump, 1=bow snap
+    // Auto-haptics frequency split (v1.5.0). 0 = OFF (default): the single-band
+    // path is byte-identical to previous firmware. When set (30-200 Hz), the
+    // haptics band is divided at the crossover: LOW band (below - impacts,
+    // explosions, engine weight) and HIGH band (crossover..LP cutoff - where
+    // music bass lines and voice fundamentals live), each enveloped separately
+    // and weighted by its own gain before the shared gate + carrier. Typical
+    // use: keep low at 100, drop high to tame music/dialog-driven buzz.
+    uint16_t ah_xover_hz;   // 0=off, else 30-200 Hz crossover
+    uint8_t  ah_low_gain;   // [0-100] weight of the low band (default 100)
+    uint8_t  ah_high_gain;  // [0-100] weight of the high band (default 100)
 };
 
 struct __attribute__((packed)) Config {

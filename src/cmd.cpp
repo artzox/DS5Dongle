@@ -35,8 +35,8 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
-constexpr uint8_t FW_VER_MINOR = 1;
-constexpr uint8_t FW_VER_PATCH = 2;
+constexpr uint8_t FW_VER_MINOR = 5;
+constexpr uint8_t FW_VER_PATCH = 1;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
@@ -47,8 +47,7 @@ static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
     return true;
 }
 
-static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t bufsize) {
-    Config_body new_config = get_config();
+static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t const *buffer, uint16_t bufsize) {
 
     switch (field_id) {
         case 0x01: {
@@ -188,11 +187,30 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
         case 0x39: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback=v; break; }
         case 0x3a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_src=v; break; }
         case 0x3b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_freq=v; break; }
+        case 0x40: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_lp_hz=v; break; }
+        case 0x41: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_hold=v; break; }
+        case 0x42: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_mode=v; break; }
+        case 0x43: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_strength=v; break; }
+        case 0x45: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_threshold=v; break; }
+        case 0x46: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_start_pos=v; break; }
+        case 0x47: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_pushback=v; break; }
+        case 0x48: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_pushback_freq=v; break; }
+        case 0x49: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_kick_style=v; break; }
+        case 0x4a: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_xover_hz=v; break; }
+        case 0x4b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_low_gain=v; break; }
+        case 0x4c: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_high_gain=v; break; }
+        case 0x44: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_kick_style=v; break; }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
             return false;
     }
 
+    return true;
+}
+
+static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t bufsize) {
+    Config_body new_config = get_config();
+    if (!set_field_in(new_config, field_id, buffer, bufsize)) return false;
     set_config(reinterpret_cast<const uint8_t *>(&new_config), sizeof(new_config));
     return true;
 }
@@ -272,6 +290,19 @@ static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize
         case 0x39: return write_config_value(buffer, bufsize, config.at_pushback);
         case 0x3a: return write_config_value(buffer, bufsize, config.at_pushback_src);
         case 0x3b: return write_config_value(buffer, bufsize, config.at_pushback_freq);
+        case 0x40: return write_config_value(buffer, bufsize, config.effect_leak_lp_hz);
+        case 0x41: return write_config_value(buffer, bufsize, config.effect_leak_hold);
+        case 0x42: return write_config_value(buffer, bufsize, config.at_l2_mode);
+        case 0x43: return write_config_value(buffer, bufsize, config.at_l2_strength);
+        case 0x45: return write_config_value(buffer, bufsize, config.at_l2_threshold);
+        case 0x46: return write_config_value(buffer, bufsize, config.at_l2_start_pos);
+        case 0x47: return write_config_value(buffer, bufsize, config.at_l2_pushback);
+        case 0x48: return write_config_value(buffer, bufsize, config.at_l2_pushback_freq);
+        case 0x49: return write_config_value(buffer, bufsize, config.at_l2_kick_style);
+        case 0x4a: return write_config_value(buffer, bufsize, config.ah_xover_hz);
+        case 0x4b: return write_config_value(buffer, bufsize, config.ah_low_gain);
+        case 0x4c: return write_config_value(buffer, bufsize, config.ah_high_gain);
+        case 0x44: return write_config_value(buffer, bufsize, config.at_kick_style);
         case 0x3c: { extern volatile uint8_t g_diag_at_env; return write_config_value(buffer, bufsize, (uint8_t)g_diag_at_env); }
         case 0x35: { extern volatile uint16_t g_diag_gyro; return write_config_value(buffer, bufsize, (uint16_t)g_diag_gyro); }
         case 0x36: { extern volatile uint8_t g_diag_synth; return write_config_value(buffer, bufsize, (uint8_t)g_diag_synth); }
@@ -452,6 +483,71 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
                     memcpy(buf + 6, name, SLOT_NAME_LEN);
                 }
                 buf[3] = buffer[0];
+            }
+            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            break;
+        }
+
+        case 0x0b: {
+            // BULK set config fields. Payload: [n, then n x (fid, len, value_bytes)].
+            // All entries land in ONE config copy followed by ONE live apply - a
+            // full-profile apply drops from ~60 feature-report round-trips (each a
+            // USB transaction + portal-side settle) to a handful of packed chunks.
+            // Reply: 0x66 0x0b status applied_count (0x00 = every entry applied).
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x0b; buf[2] = 0x01;
+            if (bufsize >= 1) {
+                Config_body nc = get_config();
+                const uint8_t n = buffer[0];
+                uint8_t applied = 0; uint16_t off = 1; bool ok = true;
+                for (uint8_t i2 = 0; i2 < n && ok; ++i2) {
+                    if ((uint16_t)(off + 2) > bufsize) { ok = false; break; }
+                    const uint8_t fid = buffer[off];
+                    const uint8_t len = buffer[off + 1];
+                    if (len == 0 || (uint16_t)(off + 2 + len) > bufsize) { ok = false; break; }
+                    if (set_field_in(nc, fid, buffer + off + 2, len)) applied++;
+                    else ok = false;
+                    off += 2 + len;
+                }
+                if (ok && applied == n) buf[2] = 0x00;
+                buf[3] = applied;
+                if (applied) set_config(reinterpret_cast<const uint8_t *>(&nc), sizeof(nc));
+            }
+            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            break;
+        }
+        case 0x0c: {
+            // BULK get config fields. Payload: [n, fid...]. Reply: 0x66 0x0c 0x00 n
+            // then n x (fid, len, value_bytes) - the read-side twin of 0x0b, so a
+            // full portal read is a few packets instead of ~60.
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x0c; buf[2] = 0x01;
+            if (bufsize >= 1) {
+                const uint8_t n = buffer[0];
+                uint16_t out = 4; uint8_t done = 0; bool ok = true;
+                for (uint8_t i2 = 0; i2 < n && ok; ++i2) {
+                    if ((uint16_t)(1 + i2) >= bufsize) { ok = false; break; }
+                    const uint8_t fid = buffer[1 + i2];
+                    uint8_t tmp[8]{};
+                    if (!get_config_field(fid, tmp, sizeof(tmp))) { ok = false; break; }
+                    // get_config_field writes the raw value; length by field type:
+                    // reuse its convention - u8=1, u16=2, f32=4. Determine via a
+                    // conservative probe: write_config_value zero-fills, so track
+                    // known u16/f32 ids explicitly.
+                    uint8_t len = 1;
+                    switch (fid) {
+                        // u16 fields (must match the portal FIELDS table)
+                        case 0x00: case 0x14: case 0x1b: case 0x1c:
+                        case 0x1f: case 0x26: case 0x40: case 0x4a: len = 2; break;
+                        case 0x01: len = 4; break; // haptics_gain f32
+                        default: len = 1; break;
+                    }
+                    if ((uint16_t)(out + 2 + len) > sizeof(buf)) { ok = false; break; }
+                    buf[out] = fid; buf[out + 1] = len;
+                    memcpy(buf + out + 2, tmp, len);
+                    out += 2 + len;
+                    done++;
+                }
+                if (ok) buf[2] = 0x00;
+                buf[3] = done;
             }
             feature_data[0x81].assign(buf, buf + sizeof(buf));
             break;

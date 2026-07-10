@@ -384,8 +384,27 @@ int main() {
     while (1) {
 #if !ENABLE_SERIAL
         watchdog_update();
-        synth_watchdog();
 #endif
+        // Synth tick: with the host quiet, gated adaptive triggers must still
+        // engage/release from live trigger movement, and releases must actually
+        // reach the controller (fixes triggers stuck in resistance after rapid
+        // R2/L2 play in games that only send reports when rumble changes).
+        {
+            static uint32_t last_synth_tick_ms = 0;
+            const uint32_t now = to_ms_since_boot(get_absolute_time());
+            if (now - last_synth_tick_ms >= 50) {
+                last_synth_tick_ms = now;
+                if (state_synth_tick()) {
+                    uint8_t outputData[78]{};
+                    outputData[0] = 0x31;
+                    outputData[1] = reportSeqCounter << 4;
+                    if (++reportSeqCounter == 256) reportSeqCounter = 0;
+                    outputData[2] = 0x10;
+                    state_set(outputData + 3, sizeof(SetStateData));
+                    bt_write(outputData, sizeof(outputData));
+                }
+            }
+        }
         cyw43_arch_poll();
         tud_task();
         wake_task();
