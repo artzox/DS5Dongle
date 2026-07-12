@@ -480,7 +480,7 @@ profile per game and routes game audio to the dongle for audio-driven auto-hapti
 switching automatically between native-haptics games and everything else.
 
 Quick start:
-1. Install Python 3 and `pip install pyaudiowpatch numpy`.
+1. Install Python 3 and `pip install pyaudiowpatch`.
 2. Run `automation\ds5-setup.bat` — it detects its own folder and generates the
    Playnite scripts with correct paths, then prints the exact lines to paste into
    Playnite's script settings.

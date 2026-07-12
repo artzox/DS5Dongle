@@ -5,13 +5,6 @@ All notable changes to this project are documented here.
 ## [1.5.2] — 2026-07-10
 
 ### Fixed
-- **ds5audio: surround (5.1/7.1) capture starved the haptics.** Non-stereo
-  captures previously kept only the front L/R channels - on AVR endpoints that
-  silently discarded the LFE channel, where games route most impact bass, making
-  haptics and effect leak much weaker than on a 2.0 endpoint. ds5audio now
-  downmixes: LFE at full weight, side/rear at half, center (dialog) excluded by
-  default (tunable via --lfe-gain / --surround-gain / --center-gain). Requires
-  numpy (`pip install numpy`).
 - **Effect leak much quieter since the 1.2.0 band-pass window.** Two causes: the
   window walls overlap (narrow windows lost several dB of passband level), and
   the output low-pass default of 3500 Hz removed the 3-8 kHz range where the
