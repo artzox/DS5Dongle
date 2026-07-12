@@ -103,13 +103,3 @@ playback-to-dongle side — device matching, the 4-channel format, latency — m
 tuning against real hardware. If something's off, note exactly what (no device found /
 wrong device / dropouts / haptics feel wrong with which `--map`) and it can be
 adjusted.
-
-
-## Surround (5.1/7.1) capture
-
-When the capture endpoint is surround (e.g. an AVR), WASAPI delivers discrete
-channels and games route most impact bass to the LFE (.1) channel. ds5audio
-downmixes for haptics: **LFE at full weight, side/rear at half, CENTER (dialog)
-excluded** - so impacts stay strong and dialog stays out of the pad. Tune with
-`--lfe-gain`, `--surround-gain`, `--center-gain` (e.g. `--center-gain 0.5` to
-fold some dialog back in). On 2.0 endpoints nothing changes.
