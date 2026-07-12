@@ -30,6 +30,7 @@ import os
 import sys
 import time
 import argparse
+import numpy as np
 import struct
 
 # --- pythonw / no-console safety --------------------------------------------
@@ -512,18 +513,32 @@ def run(args):
                 while True:
                     data = in_stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
 
-                    # If capture isn't stereo, downmix/handle: take first two channels.
+                    # If capture isn't stereo, DOWNMIX into the DSP feed instead of
+                    # discarding channels. This matters on 5.1/7.1 endpoints (AVRs):
+                    # WASAPI delivers discrete channels (FL FR C LFE ...), and games
+                    # route most explosion/impact bass to LFE - dropping it (the old
+                    # behavior: take ch0/ch1 only) starves the haptics of exactly the
+                    # content they exist for. Haptics-optimized weights: LFE at full
+                    # (impacts), surrounds at half (panned effects), CENTER excluded
+                    # by default (dialog should not buzz the pad; --center-gain overrides).
                     if in_channels != 2:
-                        # interleaved int16; pull ch0,ch1 from each frame
-                        total = len(data) // (2 * in_channels)
-                        alls = struct.unpack("<" + "h" * (total * in_channels), data)
-                        st = bytearray()
-                        for i in range(total):
-                            base = i * in_channels
-                            l = alls[base]
-                            r = alls[base + 1] if in_channels > 1 else alls[base]
-                            st += struct.pack("<hh", l, r)
-                        data = bytes(st)
+                        a = np.frombuffer(data, dtype="<i2").astype(np.float32).reshape(-1, in_channels)
+                        if in_channels >= 6:  # 5.1/7.1: FL FR C LFE + surrounds
+                            l = a[:, 0] + args.center_gain * a[:, 2] + args.lfe_gain * a[:, 3]
+                            r = a[:, 1] + args.center_gain * a[:, 2] + args.lfe_gain * a[:, 3]
+                            for sc in range(4, in_channels):
+                                tgt = l if ((sc - 4) % 2 == 0) else r
+                                tgt += args.surround_gain * a[:, sc]
+                        else:                 # 1/3/4/5 ch: firsts + extras as surrounds
+                            l = a[:, 0].copy()
+                            r = (a[:, 1] if in_channels > 1 else a[:, 0]).copy()
+                            for sc in range(2, in_channels):
+                                tgt = l if (sc % 2 == 0) else r
+                                tgt += args.surround_gain * a[:, sc]
+                        mix = np.empty((a.shape[0], 2), dtype=np.float32)
+                        mix[:, 0] = l; mix[:, 1] = r
+                        np.clip(mix, -32768.0, 32767.0, out=mix)
+                        data = mix.astype("<i2").tobytes()
 
                     # Peak meter on the captured stereo (pre-resample) for diagnostics.
                     if args.verbose and data:
@@ -624,6 +639,14 @@ def main():
                     help="scan loopback devices and capture whichever currently has "
                          "audio (avoids grabbing a silent default when the game plays "
                          "to another output like a TV). Start game audio first.")
+    ap.add_argument("--lfe-gain", type=float, default=1.0, dest="lfe_gain",
+                    help="surround capture: LFE (.1 bass) weight in the haptics feed "
+                         "(default 1.0 - impacts live here)")
+    ap.add_argument("--center-gain", type=float, default=0.0, dest="center_gain",
+                    help="surround capture: CENTER (dialog) weight "
+                         "(default 0.0 - dialog kept OUT of haptics on purpose)")
+    ap.add_argument("--surround-gain", type=float, default=0.5, dest="surround_gain",
+                    help="surround capture: rear/side channel weight (default 0.5)")
     ap.add_argument("--map", choices=["duplicate", "front", "rear", "mono_all"],
                     default="duplicate",
                     help="how to map captured stereo into the dongle's 4 channels. "
