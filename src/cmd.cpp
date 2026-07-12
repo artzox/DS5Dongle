@@ -36,7 +36,7 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
 constexpr uint8_t FW_VER_MINOR = 5;
-constexpr uint8_t FW_VER_PATCH = 1;
+constexpr uint8_t FW_VER_PATCH = 2;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {

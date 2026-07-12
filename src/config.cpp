@@ -145,7 +145,7 @@ void config_valid() {
     if (body->at_pushback_src > 2) body->at_pushback_src = 2;
     if (body->at_pushback_freq < 10 || body->at_pushback_freq > 200) body->at_pushback_freq = 35; // fresh flash 0xFF lands here
     // Leak band-pass window + hold defaults (fresh flash 0xFF/0xFFFF lands here).
-    if (body->effect_leak_lp_hz < 500 || body->effect_leak_lp_hz > 12000) body->effect_leak_lp_hz = 3500;
+    if (body->effect_leak_lp_hz < 500 || body->effect_leak_lp_hz > 12000) body->effect_leak_lp_hz = 8000; // default raised in 1.5.2: 3500 gutted perceived loudness (tiny speaker is loudest 3-8 kHz)
     if (body->effect_leak_hold > 100) body->effect_leak_hold = 20; // x5 = 100 ms default
     if (body->at_kick_style > 1) body->at_kick_style = 0;          // R2 kick: vibration thump
     if (body->at_l2_mode > 2) body->at_l2_mode = 0;                 // L2 off (pre-1.2.x behavior)

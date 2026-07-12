@@ -279,6 +279,25 @@ void __not_in_flash_func(audio_loop)() {
     const float ohp_a = 1.0f - expf(-2.0f * (float)M_PI * ohp_fc / 48000.0f);
     const float olp_fc = (float)get_config().effect_leak_lp_hz;
     const float olp_a = 1.0f - expf(-2.0f * (float)M_PI * olp_fc / 48000.0f);
+    // Window make-up gain (v1.5.2): the band-pass walls overlap, so narrowing the
+    // window used to also make the leak QUIETER (a 400-3500 window lost ~16 dB of
+    // perceived level vs the pre-window firmware because the controller's tiny
+    // speaker is loudest in the 3-8 kHz range the LP removes). Compensate by the
+    // window's response at its geometric-center frequency so the volume slider
+    // owns loudness and the window owns character. Clamped to x4 (+12 dB).
+    static float leak_makeup = 1.0f;
+    static uint32_t mk_key = 0;
+    const uint32_t mk_now = ((uint32_t)ohp_fc << 16) | (uint32_t)olp_fc;
+    if (mk_now != mk_key) {
+        mk_key = mk_now;
+        const float fc = sqrtf(ohp_fc * olp_fc);           // window center
+        const float whp = fc / ohp_fc, wlp = fc / olp_fc;  // normalized freqs
+        const float g1 = whp / sqrtf(1.0f + whp * whp);    // one HP pole @ center
+        const float g2 = 1.0f / sqrtf(1.0f + wlp * wlp);   // one LP pole @ center
+        float g = (g1 * g1) * (g2 * g2);                   // two poles each
+        if (g < 0.25f) g = 0.25f;                          // clamp make-up to x4
+        leak_makeup = 1.0f / g;
+    }
     // Gate hold + hysteresis (v1.2.0): once a transient opens the gate, keep it
     // open a minimum time (hold) and only close when the level falls clearly below
     // the OPEN threshold (hysteresis). Without this the transient test flickers
@@ -357,8 +376,8 @@ void __not_in_flash_func(audio_loop)() {
             olp2_l += olp_a * (olp1_l - olp2_l);
             olp1_r += olp_a * (bp_r - olp1_r);
             olp2_r += olp_a * (olp1_r - olp2_r);
-            spk_l_out = olp2_l * leak_gain * leak_vol;
-            spk_r_out = olp2_r * leak_gain * leak_vol;
+            spk_l_out = olp2_l * leak_gain * leak_vol * leak_makeup;
+            spk_r_out = olp2_r * leak_gain * leak_vol * leak_makeup;
         } else {
             spk_l_out = raw[i * actual_ch]     / 32768.0f * spk_gain;
             spk_r_out = raw[i * actual_ch + 1] / 32768.0f * spk_gain;
