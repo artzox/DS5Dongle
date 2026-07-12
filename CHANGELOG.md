@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [1.5.2] — 2026-07-10
+
+### Fixed
+- **Effect leak much quieter since the 1.2.0 band-pass window.** Two causes: the
+  window walls overlap (narrow windows lost several dB of passband level), and
+  the output low-pass default of 3500 Hz removed the 3-8 kHz range where the
+  controller's small speaker is most efficient - the leak could need volume ~100
+  to match the old ~15. Fixes: (1) automatic make-up gain normalizes the window's
+  center to unity (clamped +12 dB), so moving the walls changes character, not
+  loudness - the volume slider owns loudness again; (2) the low-pass DEFAULT is
+  now 8000 Hz (existing saved values are untouched - raise yours toward 8000 to
+  restore loudness, or keep it low if you prefer the tamed sizzle at a higher
+  volume setting).
+
 ## [1.5.1] — 2026-07-10
 
 ### Fixed

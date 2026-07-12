@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.5.1**
+**Version 1.5.2**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -88,7 +88,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.5.1.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.5.2.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -121,7 +121,7 @@ surprise; apply them in the portal and save.)
 | Smoothness | 40 |
 | Noise Gate | 20 |
 | LP Cutoff (Hz) | 100 |
-| Frequency Split Crossover | 0 / 30-200 Hz | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-1.5.1) |
+| Frequency Split Crossover | 0 / 30-200 Hz | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-1.5.2) |
 | Low Band Gain | 0-100 | 100 | Contribution of content BELOW the crossover (impacts, explosions) |
 | High Band Gain | 0-100 | 100 | Contribution of the crossover..cutoff range (music bass, voice fundamentals) - lower it to tame music/dialog buzz |
 | Filter Slope | 12 dB/oct |
@@ -134,7 +134,7 @@ surprise; apply them in the portal and save.)
 | Effect Leak Decay/Fade-out | 80 |
 | Effect Leak Attack/Responsiveness | 50 |
 | Effect Leak Output High-pass (Hz) | 1000 |
-| Effect Leak Output Low-pass | 500–12000 Hz | 3500 | High wall of the leak window (12 dB/oct); kills treble sizzle/crackle. With the high-pass forms the band-pass "capture window" — only sound inside it leaks |
+| Effect Leak Output Low-pass | 500–12000 Hz | 8000 | High wall of the leak window (12 dB/oct); kills treble sizzle/crackle. With the high-pass forms the band-pass "capture window" — only sound inside it leaks |
 | Effect Leak Gate Hold | 0–100 (x5 ms) | 20 (100 ms) | Minimum gate-open time per transient + hysteresis; stops the gate chattering (choppy/poppy leak) |
 | Effect Leak Detection Band (Hz) | 2500 |
 
@@ -460,16 +460,16 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.5.1.uf2` — the firmware (flash this; reports version 1.5.1)
+- `ds5-v1.5.2.uf2` — the firmware (flash this; reports version 1.5.2)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
-- `ds5dongle-v1.0.9-to-v1.5.1.patch` — incremental diff for the 1.1.0–1.5.1
+- `ds5dongle-v1.0.9-to-v1.5.2.patch` — incremental diff for the 1.1.0–1.5.2
   firmware and portal changes (apply on top of the v1.0.9 patch)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.5.1)
+- `README.md` — this file (docs version 1.5.2)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
