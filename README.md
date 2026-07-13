@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.5.2**
+**Version 1.6.2**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -88,7 +88,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.5.2.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.6.2.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -121,7 +121,7 @@ surprise; apply them in the portal and save.)
 | Smoothness | 40 |
 | Noise Gate | 20 |
 | LP Cutoff (Hz) | 100 |
-| Frequency Split Crossover | 0 / 30-200 Hz | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-1.5.2) |
+| Frequency Split Crossover | 0 / 30-200 Hz | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-1.6.2) |
 | Low Band Gain | 0-100 | 100 | Contribution of content BELOW the crossover (impacts, explosions) |
 | High Band Gain | 0-100 | 100 | Contribution of the crossover..cutoff range (music bass, voice fundamentals) - lower it to tame music/dialog buzz |
 | Filter Slope | 12 dB/oct |
@@ -239,7 +239,7 @@ burst fades (hysteresis prevents chatter at the threshold).
 
 | Setting | Range | Default | Notes |
 |---|---|---|---|
-| Mode (per trigger) | Off / Gated / Always | Off | Each trigger has its own section. Gated = the OPPOSITE trigger arms it (R2 gated = L2 arms; L2 gated = R2 arms). Any combination is valid |
+| Mode (per trigger) | Off / Gated by trigger / Always / Gated by shoulder | Off | Each trigger has its own section. "Gated by trigger" = the OPPOSITE trigger arms it (analog). "Gated by shoulder" = the opposite bumper arms it (L1->R2, R1->L2, digital). Any combination is valid |
 | Kick strength (per trigger) | 0-100 | R2: 0, L2: 0 | 0 = no kick on that trigger; e.g. R2 kicks on fire while L2 only resists |
 | Kick style (per trigger) | Thump / Bow snap | Thump | Thump = vibration buzz (0x26). Bow snap = mechanical push-back via the Bow effect (0x22): the snap force presses the trigger back against the finger - sharper recoil, experimental (feel varies with hold depth) |
 | Kick follows | Rumble / Audio / Both | Both | Shared envelope source for both triggers (one signal) |
@@ -460,16 +460,16 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.5.2.uf2` — the firmware (flash this; reports version 1.5.2)
+- `ds5-v1.6.2.uf2` — the firmware (flash this; reports version 1.6.2)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
-- `ds5dongle-v1.0.9-to-v1.5.2.patch` — incremental diff for the 1.1.0–1.5.2
+- `ds5dongle-v1.0.9-to-v1.6.2.patch` — incremental diff for the 1.1.0–1.6.2
   firmware and portal changes (apply on top of the v1.0.9 patch)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.5.2)
+- `README.md` — this file (docs version 1.6.2)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
@@ -480,7 +480,7 @@ profile per game and routes game audio to the dongle for audio-driven auto-hapti
 switching automatically between native-haptics games and everything else.
 
 Quick start:
-1. Install Python 3 and `pip install pyaudiowpatch`.
+1. Install Python 3 and `pip install pyaudiowpatch numpy`.
 2. Run `automation\ds5-setup.bat` — it detects its own folder and generates the
    Playnite scripts with correct paths, then prints the exact lines to paste into
    Playnite's script settings.

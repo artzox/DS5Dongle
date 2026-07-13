@@ -2,9 +2,54 @@
 
 All notable changes to this project are documented here.
 
+## [1.6.2] — 2026-07-10
+
+### Fixed
+- **Shoulder-gated trigger modes (added in 1.6.0) did nothing.** The config
+  validator still clamped the trigger mode to a maximum of 2, so selecting
+  "Gated by shoulder" (value 3) was silently reset to Off on every save/load/apply
+  - the mode never survived to the engagement logic. Raised the bound to 3 for
+  both R2 (at_mode) and L2 (at_l2_mode). L1->R2 and R1->L2 gating now work.
+
+## [1.6.1] — 2026-07-10
+
+### Changed
+- **Adaptive Triggers (R2, L2) and Gyro Aiming mode menus reordered** so "Off" and
+  "Always on" lead, followed by the conditional/gated modes. Display order only -
+  stored values are unchanged, so existing profiles and slots are unaffected.
+
+### Fixed
+- Portal select menus now honor an explicit option order. (JavaScript forces
+  integer object keys into ascending order, which had silently re-sorted menus
+  regardless of how the options were written; selects now use an ordered-array
+  form.)
+
+## [1.6.0] — 2026-07-10
+
+### Added
+- **Shoulder-button gating for adaptive triggers.** Each trigger's Mode dropdown
+  gains a "Gated by shoulder" option: R2 can now be armed by **L1**, and L2 by
+  **R1** (opposite-side, digital). This sits alongside the existing opposite-
+  trigger gating (L2 arms R2 / R2 arms L2) - nothing is removed, it's an extra
+  mode. Because shoulder buttons are digital, arming is simple on/off with no
+  threshold (the Arming threshold field is ignored in this mode). Useful when the
+  aim/ready action in a game is bound to a bumper rather than a trigger. Composes
+  with per-trigger strength, kick, and bow settings exactly like the other modes.
+
+### Notes
+- No config-layout change (the new mode is just an added enum value), so existing
+  profiles and slots are unaffected; config version stays 12.
+
 ## [1.5.2] — 2026-07-10
 
 ### Fixed
+- **ds5audio: surround (5.1/7.1) capture starved the haptics.** Non-stereo
+  captures previously kept only the front L/R channels - on AVR endpoints that
+  silently discarded the LFE channel, where games route most impact bass, making
+  haptics and effect leak much weaker than on a 2.0 endpoint. ds5audio now
+  downmixes: LFE at full weight, side/rear at half, center (dialog) excluded by
+  default (tunable via --lfe-gain / --surround-gain / --center-gain). Requires
+  numpy (`pip install numpy`).
 - **Effect leak much quieter since the 1.2.0 band-pass window.** Two causes: the
   window walls overlap (narrow windows lost several dB of passband level), and
   the output low-pass default of 3500 Hz removed the 3-8 kHz range where the
