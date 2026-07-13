@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.6.3] — 2026-07-13
+
+### Changed
+- **Faster Bluetooth reconnect.** Adopted an aggressive interlaced page-scan
+  setting (11.25 ms interval) so the dongle re-listens for the host more quickly
+  after a disconnect, set once the BT stack reaches its working state. Adopted
+  from awalol upstream ("fix: reconnect speed"); this fork did not previously set
+  page-scan parameters at all. Low-risk - affects only reconnect/discoverability
+  timing, not the active connection.
+
 ## [1.6.2] — 2026-07-10
 
 ### Fixed

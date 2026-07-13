@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.6.2**
+**Version 1.6.3**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -37,13 +37,15 @@ to RAM so native fine haptics and controller audio work without overclocking.
   tactile buzz, per trigger, with an "only while pressed" option, strength, and
   frequency. Useful for feeling rumble through the triggers in games that only
   send classic rumble.
-- **Adaptive triggers (Stages 1 + 2)** — L2-gated constant resistance on R2: hold
-  the aim trigger and R2 stiffens, for a light adaptive-trigger effect in games
-  that don't drive the triggers themselves. Configurable strength, arm threshold,
-  and start position; also available always-on. Stage 2 adds a **push-back kick
-  (recoil)**: while resistance is engaged, rumble/haptics bursts fire a
-  low-frequency vibration thump on R2 — each shot knocks the trigger back against
-  your finger, then resistance resumes.
+- **Adaptive triggers (Stages 1 + 2)** — gated constant resistance for a light
+  adaptive-trigger effect in games that don't drive the triggers themselves. R2
+  and L2 are **fully independent**, each with its own mode, strength, threshold,
+  start position and kick: gate a trigger by the opposite trigger (analog) or the
+  opposite shoulder button (L1→R2, R1→L2, digital), or run it always-on. Stage 2
+  adds a **push-back kick (recoil)**: while resistance is engaged, rumble/haptics
+  bursts knock the trigger back against your finger — as a low-frequency vibration
+  thump or a mechanical **bow-snap**, selectable per trigger — then resistance
+  resumes.
 - **Profile slots** — up to 8 complete configurations stored on the dongle
   itself. Save your setups once in the portal; switching later is a single
   instant command instead of a full profile write — used by the automation for
@@ -88,7 +90,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.6.2.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.6.3.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -121,9 +123,9 @@ surprise; apply them in the portal and save.)
 | Smoothness | 40 |
 | Noise Gate | 20 |
 | LP Cutoff (Hz) | 100 |
-| Frequency Split Crossover | 0 / 30-200 Hz | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-1.6.2) |
-| Low Band Gain | 0-100 | 100 | Contribution of content BELOW the crossover (impacts, explosions) |
-| High Band Gain | 0-100 | 100 | Contribution of the crossover..cutoff range (music bass, voice fundamentals) - lower it to tame music/dialog buzz |
+| Frequency Split Crossover (Hz) | 0 (off) |
+| Low Band Gain | 100 |
+| High Band Gain | 100 |
 | Filter Slope | 12 dB/oct |
 | Auto-mute Speaker (Replace) | Yes |
 | Auto-mute Speaker (Mix) | Yes |
@@ -134,8 +136,8 @@ surprise; apply them in the portal and save.)
 | Effect Leak Decay/Fade-out | 80 |
 | Effect Leak Attack/Responsiveness | 50 |
 | Effect Leak Output High-pass (Hz) | 1000 |
-| Effect Leak Output Low-pass | 500–12000 Hz | 8000 | High wall of the leak window (12 dB/oct); kills treble sizzle/crackle. With the high-pass forms the band-pass "capture window" — only sound inside it leaks |
-| Effect Leak Gate Hold | 0–100 (x5 ms) | 20 (100 ms) | Minimum gate-open time per transient + hysteresis; stops the gate chattering (choppy/poppy leak) |
+| Effect Leak Output Low-pass (Hz) | 8000 |
+| Effect Leak Gate Hold (x5 ms) | 20 |
 | Effect Leak Detection Band (Hz) | 2500 |
 
 **Haptics & Audio**
@@ -190,7 +192,10 @@ The portal groups settings into the sections below.
 | Intensity (%) | 0–200 | 100 | Strength of the audio-derived haptics (curved response) |
 | Smoothness | 0–100 | 40 | Higher = smoother/longer decay; lower = snappier |
 | Noise Gate | 0–100 | 20 | Suppresses quiet content (dialog/ambience) below a threshold |
-| LP Cutoff (Hz) | 30–200 | 60 | Crossover — only audio below this drives haptics |
+| LP Cutoff (Hz) | 30–200 | 60 | Upper edge of the haptics band — only audio **below** this drives haptics (content above never reaches the actuators) |
+| Frequency Split Crossover (Hz) | 0 / 30–200 | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-split firmware). Must sit **below** LP Cutoff |
+| Low Band Gain | 0–100 | 100 | Contribution of content **below** the crossover (impacts, explosions, engine weight) |
+| High Band Gain | 0–100 | 100 | Contribution of the crossover..cutoff range (music bass, voice fundamentals) — lower it to tame music/dialog-driven buzz |
 | Filter Slope | 6 / 12 / 24 dB/oct | 12 | Steeper rejects voice above the cutoff more aggressively |
 | Auto-mute Speaker (Replace) | on/off | on | Mute controller speaker in Replace mode |
 | Auto-mute Speaker (Mix) | on/off | off | Mute controller speaker in Mix mode |
@@ -200,13 +205,16 @@ The portal groups settings into the sections below.
 | Effect Leak Sensitivity | 0–100 | 50 | How sudden a level jump counts as an effect (higher = more leaks through) |
 | Effect Leak Decay/Fade-out | 0–100 | 40 | How gradually effects fade after triggering (~50 ms .. 500 ms) |
 | Effect Leak Attack/Responsiveness | 0–100 | 50 | How fast the gate opens (higher = more immediate, less delay) |
-| Effect Leak Output High-pass (Hz) | 50–2000 | 200 | Removes deep bass from the speaker output to stop popping |
+| Effect Leak Output High-pass (Hz) | 50–2000 | 200 | Low wall of the leak window (12 dB/oct) — removes deep bass that pops the speaker |
+| Effect Leak Output Low-pass (Hz) | 500–12000 | 8000 | High wall of the leak window (12 dB/oct) — cuts treble sizzle/crackle. With the high-pass forms a band-pass "capture window": only sound inside it leaks. Automatic make-up gain keeps loudness constant as you move the walls |
+| Effect Leak Gate Hold (×5 ms) | 0–100 | 20 (100 ms) | Minimum gate-open time per transient + hysteresis; stops the gate chattering (the "choppy/poppy" leak artifact) |
 | Effect Leak Detection Band (Hz) | 100–5000 | 800 | Frequency band the transient detector listens to |
 
 ### Haptics & Audio
 | Setting | Range | Default | Notes |
 |---|---|---|---|
 | Native Haptics Gain | 1.0–2.0 | 1.0 | Multiplier on native haptic channels |
+| Native Haptics Anti-alias | Off / Light / Strong | Light | Smooths the native haptic stream (Off = raw/gritty; Strong = softest) |
 | Speaker Volume | 0–127 | 100 | Controller speaker volume (also scales haptic strength) |
 | Headset Volume | 0–127 | 100 | Headset jack volume |
 | Speaker Gain | 0–7 | 2 | Controller speaker gain stage |
@@ -239,16 +247,23 @@ burst fades (hysteresis prevents chatter at the threshold).
 
 | Setting | Range | Default | Notes |
 |---|---|---|---|
-| Mode (per trigger) | Off / Gated by trigger / Always / Gated by shoulder | Off | Each trigger has its own section. "Gated by trigger" = the OPPOSITE trigger arms it (analog). "Gated by shoulder" = the opposite bumper arms it (L1->R2, R1->L2, digital). Any combination is valid |
-| Kick strength (per trigger) | 0-100 | R2: 0, L2: 0 | 0 = no kick on that trigger; e.g. R2 kicks on fire while L2 only resists |
-| Kick style (per trigger) | Thump / Bow snap | Thump | Thump = vibration buzz (0x26). Bow snap = mechanical push-back via the Bow effect (0x22): the snap force presses the trigger back against the finger - sharper recoil, experimental (feel varies with hold depth) |
-| Kick follows | Rumble / Audio / Both | Both | Shared envelope source for both triggers (one signal) |
-| Strength | 0–100 | 70 | Resistance intensity (mapped to the effect's 0–7 range) |
-| Arm Threshold | 1–255 | 30 | How far L2 must be pulled to arm R2 resistance (~12% at default) |
-| Start Position | 0–9 | 0 | Trigger-travel zone where resistance begins (0 = from the start) |
-| Push-back kick strength | 0–100 | 0 (off) | Recoil intensity; scales the thump amplitude with the vibration envelope. 0 keeps pure Stage 1 behavior |
-| Kick follows | Rumble / Audio / Both | Both | Envelope source: game rumble (incl. converted DS4Windows rumble), the auto-haptics audio envelope, or the strongest of the two |
+The R2 and L2 triggers each have their own independent section in the portal
+with the full set of settings below. The only shared control is **Kick follows**
+(the kick's envelope source), since it's a single signal both triggers listen to.
+
+| Setting (per trigger) | Range | Default | Notes |
+|---|---|---|---|
+| Mode | Off / Gated by trigger / Always / Gated by shoulder | Off | "Gated by trigger" = the OPPOSITE trigger arms it, analog (L2 arms R2, R2 arms L2). "Gated by shoulder" = the opposite bumper arms it, digital (L1→R2, R1→L2). Any R2/L2 combination is valid |
+| Resistance strength | 0–100 | 70 | Resistance intensity (mapped to the effect's 0–7 range) |
+| Arming threshold | 1–255 | 30 | In "Gated by trigger" mode, how far the arming trigger must be pulled (~12% at default). Ignored in shoulder-gated mode (digital on/off) |
+| Start position | 0–9 | 0 | Trigger-travel zone where resistance begins (0 = from the start) |
+| Push-back kick strength | 0–100 | 0 (off) | Recoil intensity; scales the thump amplitude with the vibration envelope. 0 = no kick on that trigger (pure resistance) |
+| Kick style | Thump / Bow snap | Thump | Thump = vibration buzz (0x26). Bow snap = mechanical push-back via the Bow effect (0x22): the snap force presses the trigger back against the finger — sharper recoil, experimental (feel varies with hold depth) |
 | Kick thump frequency | 10–200 | 35 | Vibration frequency of the kick; lower = heavier knock, higher = buzzier (R2T's default buzz is 60 for comparison) |
+
+| Shared setting | Range | Default | Notes |
+|---|---|---|---|
+| Kick follows | Rumble / Audio / Both | Both | Envelope source for **both** triggers' kicks: game rumble (incl. converted DS4Windows rumble), the auto-haptics audio envelope, or the strongest of the two |
 
 *Guide:* **L2-gated** gives a shooter-style "aim to feel the trigger tension"
 effect without needing native adaptive-trigger support. Resistance wins over R2T
@@ -282,10 +297,9 @@ Maps controller motion onto the right stick for motion aiming.
 the controller to fine-tune aim only when aiming down sights. Raise sensitivity if
 the motion feels sluggish; use invert if the direction feels backwards.
 
-### Trigger/Gyro — shared
+### Trigger effects — shared
 | Setting | Range | Default | Notes |
 |---|---|---|---|
-| Native Haptics Anti-alias | Off / Light / Strong | Light | Smooths the native haptic stream (Off = raw/gritty; Strong = softest) |
 | Force Override | on/off | off | on = force R2T/AT even when a game/app is sending its own trigger effects (off = yield to the game) |
 
 ### Device & Connection
@@ -357,9 +371,12 @@ is high-passed to protect the small speaker from low-frequency popping.
   (check the RSSI display) keeps it as good as it gets.
 - **WebHID requires Chrome/Edge** and a secure context (download the portal file or
   serve from localhost). Firefox and Safari do not support WebHID.
-- **Always nuke after a structure change.** When updating to a firmware build with
-  changed settings, flash `flash_nuke.uf2` first, then this firmware, to avoid
-  stale/garbage settings.
+- **Firmware upgrades preserve your settings and slots.** Config and profile
+  slots carry across a normal reflash, and settings from older layouts are
+  migrated automatically on first boot (fields that didn't exist yet take safe
+  defaults). You only need `flash_nuke.uf2` if the config appears corrupted or a
+  release explicitly calls for it. After a layout change it's still worth opening
+  the portal to check any new settings and re-saving slots that use them.
 - **Wake from sleep** depends on the host's sleep state. USB device remote-wakeup
   works from traditional S3 sleep; behavior under Modern Standby (S0 Low Power Idle)
   varies by system, and the device's "Allow this device to wake the computer"
@@ -460,16 +477,14 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.6.2.uf2` — the firmware (flash this; reports version 1.6.2)
+- `ds5-v1.6.3.uf2` — the firmware (flash this; reports version 1.6.3)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
-- `ds5dongle-v1.0.9-to-v1.6.2.patch` — incremental diff for the 1.1.0–1.6.2
-  firmware and portal changes (apply on top of the v1.0.9 patch)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.6.2)
+- `README.md` — this file (docs version 1.6.3)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
