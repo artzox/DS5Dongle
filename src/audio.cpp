@@ -66,6 +66,8 @@ volatile uint8_t g_rumble_r = 0;
 // used by the L2-gated R2 adaptive-trigger feature.
 volatile uint8_t g_l2_pos = 0;
 volatile uint8_t g_r2_pos = 0; // R2 (right trigger) analog position, for r2t on-press gating
+volatile uint8_t g_l1_btn = 0; // L1 shoulder (digital), for shoulder-gated adaptive triggers
+volatile uint8_t g_r1_btn = 0; // R1 shoulder (digital)
 static uint8_t opus_buf[200];
 critical_section_t opus_cs;
 

@@ -319,17 +319,22 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // "Gated" arms when the OPPOSITE trigger passes at_threshold, with the same
         // release hysteresis. Any combination is valid: L2 always + R2 gated,
         // L2 always + R2 off, both gated (each armed by the other), etc.
-        extern volatile uint8_t g_l2_pos, g_r2_pos;
-        auto at_engage = [&](uint8_t mode, uint8_t gate_pos, uint8_t thr, uint8_t strength, bool &engaged) -> bool {
+        extern volatile uint8_t g_l2_pos, g_r2_pos, g_l1_btn, g_r1_btn;
+        // gate_pos = analog arming source (opposite trigger) for mode 1;
+        // shoulder = digital arming source (opposite shoulder) for mode 3.
+        auto at_engage = [&](uint8_t mode, uint8_t gate_pos, uint8_t shoulder,
+                             uint8_t thr, uint8_t strength, bool &engaged) -> bool {
             if (mode == 0 || strength == 0) { engaged = false; return false; }
             if (mode == 2) { engaged = true; return true; }     // always on
-            const uint8_t rel = (thr > 15) ? (uint8_t)(thr - 15) : 1; // mode 1: gated + hysteresis
+            if (mode == 3) { engaged = (shoulder != 0); return engaged; } // shoulder-gated (digital)
+            const uint8_t rel = (thr > 15) ? (uint8_t)(thr - 15) : 1; // mode 1: opposite-trigger gated + hysteresis
             if (!engaged && gate_pos >= thr)     engaged = true;
             else if (engaged && gate_pos < rel)  engaged = false;
             return engaged;
         };
-        const bool at_wants_r2 = at_engage(cfg.at_mode > 2 ? 0 : cfg.at_mode, g_l2_pos, cfg.at_threshold, cfg.at_strength, at_engaged);
-        const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 2 ? 0 : cfg.at_l2_mode, g_r2_pos, cfg.at_l2_threshold, cfg.at_l2_strength, at_engaged_l2);
+        // R2 armed by L2 (analog, mode 1) or L1 (digital, mode 3); L2 by R2 or R1.
+        const bool at_wants_r2 = at_engage(cfg.at_mode > 3 ? 0 : cfg.at_mode, g_l2_pos, g_l1_btn, cfg.at_threshold, cfg.at_strength, at_engaged);
+        const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 3 ? 0 : cfg.at_l2_mode, g_r2_pos, g_r1_btn, cfg.at_l2_threshold, cfg.at_l2_strength, at_engaged_l2);
 
         // -- Stage 2 kick: computed ONCE per cycle (shared envelope + burst state),
         // then written to whichever target trigger(s) are engaged. See the Stage 2

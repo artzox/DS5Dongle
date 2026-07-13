@@ -167,7 +167,7 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
         if (get_config().polling_rate_mode != 2) {
             memcpy(interrupt_in_data, data + 3, 63);
             apply_gyro_stick(interrupt_in_data);
-            { extern volatile uint8_t g_l2_pos, g_r2_pos; g_l2_pos = interrupt_in_data[4]; g_r2_pos = interrupt_in_data[5]; } // L2@4, R2@5
+            { extern volatile uint8_t g_l2_pos, g_r2_pos, g_l1_btn, g_r1_btn; g_l2_pos = interrupt_in_data[4]; g_r2_pos = interrupt_in_data[5]; g_l1_btn = (interrupt_in_data[8] & 0x01) ? 1 : 0; g_r1_btn = (interrupt_in_data[8] & 0x02) ? 1 : 0; } // L2@4 R2@5 L1/R1@8
 #if ENABLE_BATT_LED
             battery_led_note_report();
 #endif
@@ -185,7 +185,7 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
         apply_gyro_stick(interrupt_in_data);
         report_dirty = true;
         critical_section_exit(&report_cs);
-        { extern volatile uint8_t g_l2_pos, g_r2_pos; g_l2_pos = data[3 + 4]; g_r2_pos = data[3 + 5]; } // L2@4, R2@5
+        { extern volatile uint8_t g_l2_pos, g_r2_pos, g_l1_btn, g_r1_btn; g_l2_pos = data[3 + 4]; g_r2_pos = data[3 + 5]; g_l1_btn = (data[3 + 8] & 0x01) ? 1 : 0; g_r1_btn = (data[3 + 8] & 0x02) ? 1 : 0; } // L2@4 R2@5 L1/R1@8
 #if ENABLE_BATT_LED
         battery_led_note_report();
 #endif

@@ -148,7 +148,7 @@ void config_valid() {
     if (body->effect_leak_lp_hz < 500 || body->effect_leak_lp_hz > 12000) body->effect_leak_lp_hz = 8000; // default raised in 1.5.2: 3500 gutted perceived loudness (tiny speaker is loudest 3-8 kHz)
     if (body->effect_leak_hold > 100) body->effect_leak_hold = 20; // x5 = 100 ms default
     if (body->at_kick_style > 1) body->at_kick_style = 0;          // R2 kick: vibration thump
-    if (body->at_l2_mode > 2) body->at_l2_mode = 0;                 // L2 off (pre-1.2.x behavior)
+    if (body->at_l2_mode > 3) body->at_l2_mode = 0;                 // 0=off,1=R2-gated,2=always,3=R1-shoulder-gated
     if (body->at_l2_strength > 100) body->at_l2_strength = 70;
     if (body->at_l2_threshold < 1) body->at_l2_threshold = 30;      // ~12% pull arms it
     if (body->at_l2_start_pos > 9) body->at_l2_start_pos = 0;
@@ -171,7 +171,7 @@ void config_valid() {
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
     if (body->r2t_frequency < 1) body->r2t_frequency = 60;  // ~mid tactile buzz
     // Adaptive triggers Stage 1 defaults (OFF by default).
-    if (body->at_mode > 2) body->at_mode = 0;   // 0=off, 1=L2-gated, 2=always on
+    if (body->at_mode > 3) body->at_mode = 0;   // 0=off,1=L2-gated,2=always,3=L1-shoulder-gated
     if (body->at_strength > 100) body->at_strength = 70;
     if (body->at_threshold < 1) body->at_threshold = 30;   // ~12% pull arms it
     if (body->at_start_pos > 9) body->at_start_pos = 0;    // resist from the start of travel
