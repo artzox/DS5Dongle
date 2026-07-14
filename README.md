@@ -365,6 +365,18 @@ is high-passed to protect the small speaker from low-frequency popping.
   audio pipeline (Opus codec over Bluetooth), which has inherent latency. Transient
   effects expose this more than continuous audio would. It is reduced as much as
   the codec allows but is not zero.
+- **Speaker crackle / pops — set the host audio device to 48 kHz.** The firmware's
+  speaker audio pipeline (USB audio in, Opus over Bluetooth) runs at **48 kHz**. If
+  the dongle's audio output device in **Windows Sound settings → device →
+  Properties → Advanced → Default Format** is set to any other rate (44.1 kHz, 96
+  kHz, etc.), Windows resamples to feed the 48 kHz endpoint and the rate mismatch
+  causes continuous crackle at every frequency — regardless of volume, Bluetooth
+  signal, or audio buffer length. Set the format to **16-bit or 24-bit, 48000 Hz**
+  and the crackle clears. This is the fix for nearly all speaker-crackle reports.
+  (Speaker audio over Bluetooth is inherently marginal — Sony disables it entirely
+  on a stock DualSense over BT — so a trace of imperfection can remain even at
+  48 kHz; muting the speaker in Mix mode and using haptics only avoids the pipeline
+  altogether.)
 - **Bluetooth vs USB latency.** Native haptics over Bluetooth are slightly less
   tight than over USB — this is inherent to the BT transport (slot scheduling vs
   USB's fixed microframes) and is not tunable away in firmware. A strong link
