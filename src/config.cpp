@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 12;
+constexpr uint16_t CONFIG_VERSION = 13;
 // btstack's TLV flash bank (BT link keys + this project's pairing blacklist tag)
 // occupies the LAST TWO flash sectors by pico-sdk default
 // (PICO_FLASH_BANK_STORAGE_OFFSET) - and config + profile slots used to sit in
@@ -166,6 +166,13 @@ void config_valid() {
     }
     if (body->ah_low_gain > 100) body->ah_low_gain = 100;
     if (body->ah_high_gain > 100) body->ah_high_gain = 100;
+    // Trigger resistance shapes (fresh flash 0xFF lands on defaults)
+    if (body->at_shape > 2) body->at_shape = 0;
+    if (body->at_strength_b > 100) body->at_strength_b = 70;
+    if (body->at_detent_pos > 9) body->at_detent_pos = 5;
+    if (body->at_l2_shape > 2) body->at_l2_shape = 0;
+    if (body->at_l2_strength_b > 100) body->at_l2_strength_b = 70;
+    if (body->at_l2_detent_pos > 9) body->at_l2_detent_pos = 5;
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
@@ -296,14 +303,15 @@ static_assert(sizeof(SlotRecordV2) <= SLOT_STRIDE, "slot record must fit its str
 
 // Legacy v1 record (pre-1.4.0): magic, name, body (no length), crc right after.
 // Its validity check hardcoded sizeof(Config_body), so any firmware whose body
-// size differed silently saw "empty" slots. We recover them by trying the known
-// historical body sizes. (Config_body only ever grew by appending.)
-constexpr uint16_t LEGACY_BODY_SIZES[] = {
-    (uint16_t)(sizeof(Config_body) - 11), // config v8 (1.1.x)
-    (uint16_t)(sizeof(Config_body) - 7),  // config v9 (1.2.0)
-    (uint16_t)(sizeof(Config_body) - 5),  // config v10 (1.3.0 interim)
-    (uint16_t)(sizeof(Config_body)),      // v1 record written by current-size fw
-};
+// size differed silently saw "empty" slots. A previous fix listed the historical
+// body sizes relative to sizeof(Config_body) - which silently went stale every
+// time the config grew (it already had, by 1.5.0). Instead: brute-force the body
+// length. A v1 record is name + body + crc32(name+body); we scan every plausible
+// body length and accept the one whose CRC matches. Runs only for records bearing
+// the v1 magic (which no firmware writes since 1.3.2), so in practice only during
+// boot-time legacy migration - the scan cost (<500 CRC checks over <=0.5 KB) is a
+// few milliseconds once, and it recovers records from ANY historical layout,
+// forever, with zero maintenance.
 
 static const uint8_t *flash_slot_raw_at(uint32_t base_offset, uint8_t idx) {
     return reinterpret_cast<const uint8_t *>(XIP_BASE + base_offset + idx * SLOT_STRIDE);
@@ -322,7 +330,8 @@ static bool slot_read_at(uint32_t base_offset, uint8_t idx, uint8_t name_out[SLO
     if (magic == SLOT_MAGIC_V2) {
         uint16_t blen;
         memcpy(&blen, p + 4, 2);
-        if (blen == 0 || blen > sizeof(Config_body)) {
+        if (blen == 0) return false;                       // degenerate record
+        if (blen > sizeof(Config_body)) {
             // Written by NEWER firmware with a bigger body? Accept the prefix we
             // understand (fields only ever append), CRC over the stored span.
             if (blen > SLOT_STRIDE - 4 - 2 - SLOT_NAME_LEN - 4) return false;
@@ -340,8 +349,8 @@ static bool slot_read_at(uint32_t base_offset, uint8_t idx, uint8_t name_out[SLO
     if (magic == SLOT_MAGIC_V1) {
         const uint8_t *name = p + 4;
         const uint8_t *body = name + SLOT_NAME_LEN;
-        for (uint16_t blen : LEGACY_BODY_SIZES) {
-            if ((uint32_t)4 + SLOT_NAME_LEN + blen + 4 > SLOT_STRIDE) continue;
+        constexpr uint16_t BLEN_MAX = (uint16_t)(SLOT_STRIDE - 4 - SLOT_NAME_LEN - 4);
+        for (uint16_t blen = 16; blen <= BLEN_MAX; ++blen) {
             uint32_t stored;
             memcpy(&stored, body + blen, 4);
             if (stored == crc32(name, (uint32_t)SLOT_NAME_LEN + blen)) {

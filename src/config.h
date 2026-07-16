@@ -104,6 +104,22 @@ struct __attribute__((packed)) Config_body {
     uint16_t ah_xover_hz;   // 0=off, else 30-200 Hz crossover
     uint8_t  ah_low_gain;   // [0-100] weight of the low band (default 100)
     uint8_t  ah_high_gain;  // [0-100] weight of the high band (default 100)
+    // Adaptive-trigger resistance SHAPES (v1.7.0). The DualSense feedback effect
+    // (0x21) supports 10 independent travel zones with 3-bit strength each - the
+    // controller evaluates trigger position in hardware. Shapes program that
+    // zone table:
+    //   0 = Constant: start_pos..9 at Strength A (pre-1.7.0 behavior)
+    //   1 = Ramp: linear A -> B across start_pos..9 (racing: light->heavy gas,
+    //       or heavy->light brake bite - direction is just A vs B)
+    //   2 = Two-stage detent: base Strength A with a WALL of Strength B at the
+    //       detent zone - a tactile bump marking half-press (fire) from
+    //       full-press (alt-fire)
+    uint8_t  at_shape;          // R2 shape 0-2
+    uint8_t  at_strength_b;     // R2 strength B [0-100] (ramp end / detent wall)
+    uint8_t  at_detent_pos;     // R2 detent zone 0-9 (shape 2)
+    uint8_t  at_l2_shape;       // L2 shape 0-2
+    uint8_t  at_l2_strength_b;  // L2 strength B [0-100]
+    uint8_t  at_l2_detent_pos;  // L2 detent zone 0-9 (shape 2)
 };
 
 struct __attribute__((packed)) Config {

@@ -333,8 +333,15 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
             return engaged;
         };
         // R2 armed by L2 (analog, mode 1) or L1 (digital, mode 3); L2 by R2 or R1.
-        const bool at_wants_r2 = at_engage(cfg.at_mode > 3 ? 0 : cfg.at_mode, g_l2_pos, g_l1_btn, cfg.at_threshold, cfg.at_strength, at_engaged);
-        const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 3 ? 0 : cfg.at_l2_mode, g_r2_pos, g_r1_btn, cfg.at_l2_threshold, cfg.at_l2_strength, at_engaged_l2);
+        // A SHAPED trigger is "on" if EITHER strength is nonzero: ramp A=0->B is
+        // "free at rest, building resistance", not disabled; detent A=0 is a pure
+        // bump. Only Constant (shape 0) keeps the strength==0 = off convention.
+        const uint8_t at_eff_r2 = (cfg.at_shape == 0) ? cfg.at_strength
+            : ((cfg.at_strength > cfg.at_strength_b) ? cfg.at_strength : cfg.at_strength_b);
+        const uint8_t at_eff_l2 = (cfg.at_l2_shape == 0) ? cfg.at_l2_strength
+            : ((cfg.at_l2_strength > cfg.at_l2_strength_b) ? cfg.at_l2_strength : cfg.at_l2_strength_b);
+        const bool at_wants_r2 = at_engage(cfg.at_mode > 3 ? 0 : cfg.at_mode, g_l2_pos, g_l1_btn, cfg.at_threshold, at_eff_r2, at_engaged);
+        const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 3 ? 0 : cfg.at_l2_mode, g_r2_pos, g_r1_btn, cfg.at_l2_threshold, at_eff_l2, at_engaged_l2);
 
         // -- Stage 2 kick: computed ONCE per cycle (shared envelope + burst state),
         // then written to whichever target trigger(s) are engaged. See the Stage 2
@@ -381,7 +388,8 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // -- AT effect writer: kick burst (Vibration) while hot, else constant
         // resistance (Feedback). Written identically to each target trigger.
         auto write_at = [&](uint8_t *ffb, uint8_t strength, uint8_t start_pos,
-                            uint8_t kick_amp3, uint8_t kick_style, uint8_t kick_freq) {
+                            uint8_t kick_amp3, uint8_t kick_style, uint8_t kick_freq,
+                            uint8_t shape, uint8_t strength_b, uint8_t detent_pos) {
             for (int i = 0; i < 11; ++i) ffb[i] = 0;
             if (at_kick_now && kick_amp3 > 0) {
                 if (kick_style == 1) {
@@ -410,15 +418,51 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
                     ffb[9] = kick_freq;               // low = heavier knock
                 }
             } else {
-                ffb[0] = 0x21; // Feedback (constant resistance)
+                // Resistance with per-zone SHAPES. The 0x21 Feedback effect gives
+                // each of the 10 travel zones its own 3-bit strength, evaluated
+                // against trigger position by the CONTROLLER HARDWARE - so ramps
+                // and detents cost nothing at runtime and feel perfectly smooth.
+                ffb[0] = 0x21;
                 const uint8_t start = (start_pos > 9) ? 0 : start_pos;
                 uint16_t zones = 0;
-                for (int z = start; z <= 9; ++z) zones |= (1u << z);
+                uint8_t zs[10] = {0};
+                auto wire100 = [](uint16_t s100) -> uint8_t {
+                    uint8_t w = (uint8_t)((s100 * 7u + 50u) / 100u);
+                    return (w > 7) ? 7 : w;
+                };
+                for (int z = start; z <= 9; ++z) {
+                    uint16_t s100;
+                    switch (shape) {
+                        default: // 0 = Constant (pre-1.7.0 behavior)
+                            s100 = strength;
+                            break;
+                        case 1: { // Ramp: linear A -> B across start..9
+                            const int span = 9 - start;
+                            s100 = (span == 0) ? strength_b
+                                : (uint16_t)(strength + ((int)strength_b - (int)strength) * (z - start) / span);
+                            break;
+                        }
+                        case 2: // Two-stage detent: base A, WALL of B at detent zone
+                            s100 = (z == detent_pos) ? strength_b : strength;
+                            break;
+                    }
+                    // Strength 0 in a shaped trigger EXCLUDES the zone from the
+                    // bitmap: the 3-bit wire value is force level 1..8, so the only
+                    // true zero is leaving the zone out. Ramp A=0 = genuinely free
+                    // at rest; detent A=0 = pure bump with free travel elsewhere.
+                    if (shape != 0 && s100 == 0) continue;
+                    zones |= (1u << z);
+                    zs[z] = wire100(s100);
+                }
                 ffb[1] = (uint8_t)(zones & 0xFF);
                 ffb[2] = (uint8_t)((zones >> 8) & 0x03);
-                uint8_t wire = (uint8_t)(((uint16_t)strength * 7u + 50u) / 100u);
-                if (wire > 7) wire = 7;
-                pack_zones(ffb, zones, wire);
+                uint32_t bits = 0;
+                for (int z = 0; z <= 9; ++z)
+                    if (zones & (1u << z)) bits |= (uint32_t)(zs[z] & 0x7u) << (3 * z);
+                ffb[3] = (uint8_t)(bits & 0xFF);
+                ffb[4] = (uint8_t)((bits >> 8) & 0xFF);
+                ffb[5] = (uint8_t)((bits >> 16) & 0xFF);
+                ffb[6] = (uint8_t)((bits >> 24) & 0xFF);
             }
         };
 
@@ -449,7 +493,8 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
             release_left(true);      // game drives it: drop our claim, keep its effect
         } else if (at_wants_l2) {
             write_at(state.LeftTriggerFFB, cfg.at_l2_strength, cfg.at_l2_start_pos,
-                     at_kick_l2_amp3, cfg.at_l2_kick_style, cfg.at_l2_pushback_freq);
+                     at_kick_l2_amp3, cfg.at_l2_kick_style, cfg.at_l2_pushback_freq,
+                     cfg.at_l2_shape, cfg.at_l2_strength_b, cfg.at_l2_detent_pos);
             at_kick_diag = at_kick_diag || (at_kick_l2_amp3 > 0);
             state.AllowLeftTriggerFFB = 1;
             synth_owned_l2 = true;
@@ -483,7 +528,8 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
             // at_pushback == 0 leaves Stage 1 byte-identical. The envelope and
             // burst state are computed once per cycle above (shared with L2).
             write_at(state.RightTriggerFFB, cfg.at_strength, cfg.at_start_pos,
-                     at_kick_r2_amp3, cfg.at_kick_style, cfg.at_pushback_freq);
+                     at_kick_r2_amp3, cfg.at_kick_style, cfg.at_pushback_freq,
+                     cfg.at_shape, cfg.at_strength_b, cfg.at_detent_pos);
             at_kick_diag = at_kick_diag || (at_kick_r2_amp3 > 0);
             state.AllowRightTriggerFFB = 1;
             synth_owned_r2 = true;

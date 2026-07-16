@@ -35,8 +35,8 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
-constexpr uint8_t FW_VER_MINOR = 6;
-constexpr uint8_t FW_VER_PATCH = 3;
+constexpr uint8_t FW_VER_MINOR = 7;
+constexpr uint8_t FW_VER_PATCH = 1;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
@@ -199,6 +199,12 @@ static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t cons
         case 0x4a: { uint16_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_xover_hz=v; break; }
         case 0x4b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_low_gain=v; break; }
         case 0x4c: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_high_gain=v; break; }
+        case 0x4d: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_shape=v; break; }
+        case 0x4e: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_strength_b=v; break; }
+        case 0x4f: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_detent_pos=v; break; }
+        case 0x50: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_shape=v; break; }
+        case 0x51: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_strength_b=v; break; }
+        case 0x52: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_detent_pos=v; break; }
         case 0x44: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_kick_style=v; break; }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
@@ -302,6 +308,12 @@ static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize
         case 0x4a: return write_config_value(buffer, bufsize, config.ah_xover_hz);
         case 0x4b: return write_config_value(buffer, bufsize, config.ah_low_gain);
         case 0x4c: return write_config_value(buffer, bufsize, config.ah_high_gain);
+        case 0x4d: return write_config_value(buffer, bufsize, config.at_shape);
+        case 0x4e: return write_config_value(buffer, bufsize, config.at_strength_b);
+        case 0x4f: return write_config_value(buffer, bufsize, config.at_detent_pos);
+        case 0x50: return write_config_value(buffer, bufsize, config.at_l2_shape);
+        case 0x51: return write_config_value(buffer, bufsize, config.at_l2_strength_b);
+        case 0x52: return write_config_value(buffer, bufsize, config.at_l2_detent_pos);
         case 0x44: return write_config_value(buffer, bufsize, config.at_kick_style);
         case 0x3c: { extern volatile uint8_t g_diag_at_env; return write_config_value(buffer, bufsize, (uint8_t)g_diag_at_env); }
         case 0x35: { extern volatile uint16_t g_diag_gyro; return write_config_value(buffer, bufsize, (uint16_t)g_diag_gyro); }

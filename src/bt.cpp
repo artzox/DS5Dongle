@@ -365,6 +365,14 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             const uint8_t state = btstack_event_state_get_state(packet);
             printf("[BT] State: %u\n", state);
             if (state == HCI_STATE_WORKING) {
+                // Faster reconnect: aggressive interlaced page scan (11.25 ms
+                // interval) so the dongle re-listens for the host quickly after a
+                // disconnect. Set here, AFTER the stack reaches WORKING, because
+                // btstack resets scan parameters during init - setting them in
+                // bt_init() would be overwritten. (Adopted from awalol upstream
+                // "fix: reconnect speed".)
+                gap_set_page_scan_activity(0x0012, 0x0012); // 11.25 ms
+                gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
                 printf("[BT] Stack ready, start inquiry\n");
                 bt_blacklist_load();
                 gap_inquiry_start(30);
