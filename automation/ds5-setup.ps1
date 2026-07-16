@@ -289,7 +289,7 @@ if ($overrideProfile) {
     # "slot N" (or "slot:N") activates an on-dongle profile slot (fw 1.1.2+)
     # via the generic activator page - a single atomic command instead of a
     # full field-by-field profile write.
-    if ($overrideProfile -match '^(?i)slot[\s:]*([1-8])$') {
+    if ($overrideProfile -match '^(?i)slot[\s:]*([1-9]|1[0-6])$') {
         $p = Join-Path (Join-Path $DS5Dir "profiles") "slot-activate.html"
         if (Test-Path -LiteralPath $p) {
             $profileToApply = $p
@@ -634,7 +634,7 @@ function fail(msg){document.title='CONNECT NEEDED - DS5 Bridge Config';const b=d
 async function run(gesture){
   const slot=parseInt(new URLSearchParams(location.search).get('slot')||'0',10);
   const b=document.getElementById('b');
-  if(!(slot>=1&&slot<=8)){b.textContent='Bad or missing ?slot=1..8';return;}
+  if(!(slot>=1&&slot<=16)){b.textContent='Bad or missing ?slot=1..16';return;}
   try{
     device=pickDs5(await navigator.hid.getDevices());
     if(!device&&gesture){const p=await navigator.hid.requestDevice({filters:[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}]});device=pickDs5(p)||(p&&p[0]);}
@@ -775,7 +775,7 @@ if (-not (Test-Path -LiteralPath $ovrList)) {
 #
 # - The fragment matches the Playnite game name (case-insensitive, partial,
 #   accent/encoding tolerant - same rules as native-games.txt).
-# - "slot N" (or "slot:N", N = 1-8) activates a profile saved on the dongle in
+# - "slot N" (or "slot:N", N = 1-16) activates a profile saved on the dongle in
 #   the portal's Profile Slots panel - a single instant command; preferred.
 # - The file form points at an exported .autoapply.html placed in profiles\.
 # - Optional flag: ", audio" also runs the ds5audio capture, ", noaudio" skips
