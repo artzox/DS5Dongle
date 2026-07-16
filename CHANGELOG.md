@@ -2,6 +2,59 @@
 
 All notable changes to this project are documented here.
 
+## [1.7.1] — 2026-07-16
+
+### Fixed
+- **Strength A = 0 disabled shaped triggers entirely.** The engagement guard
+  (predating shapes) treated Strength A == 0 as "feature off", so Ramp 0->B and
+  detents with a free base never engaged. Shaped triggers now count as ON when
+  EITHER strength is nonzero; only Constant keeps the A=0 = off convention.
+- **Strength 0 zones now mean genuinely free travel.** The 0x21 effect's 3-bit
+  zone value is force level 1..8 - the only true zero is excluding the zone from
+  the bitmap, which shaped triggers now do. Ramp A=0 starts truly free instead of
+  faintly dragging, and Detent A=0 becomes a new capability: a pure bump at the
+  detent zone with free travel everywhere else.
+
+## [1.7.0] — 2026-07-16
+
+### Added
+- **Trigger resistance shapes** (per trigger, composes with all gating modes and
+  kick): the 0x21 feedback effect's 10 hardware travel zones now programmable as:
+  - **Constant** — start position..full at Strength A (pre-1.7.0 behavior, default)
+  - **Ramp (A → B)** — resistance changes linearly across the pull. Racing: light
+    ->heavy for a loading gas pedal (A=15, B=95), heavy->light for brake bite
+    (A=90, B=30). Direction is just which of A/B is larger.
+  - **Two-stage detent** — base Strength A with a wall of Strength B at a chosen
+    zone: a tactile bump marking half-press from full-press, for games with
+    fire/alt-fire on trigger depth (e.g. Ratchet & Clank). The game reads the
+    analog axis as always - the detent gives your finger the reference point.
+  Zone strengths are evaluated by the controller hardware against trigger
+  position - zero runtime cost, perfectly smooth response. Existing profiles are
+  unaffected (shape defaults to Constant).
+
+### Notes
+- Hardware strength resolution is 8 levels per zone; ramps quantize to that but
+  feel smooth in practice (native games use the same mechanism).
+- Resistance responds to trigger POSITION only. Game-state-driven effects (e.g.
+  resistance varying with speed) are only possible in native DualSense games.
+
+## [1.6.4] — 2026-07-14
+
+Code-audit release: two latent bugs in legacy profile-slot recovery, found by
+review (no user-visible symptoms reported).
+
+### Fixed
+- **Legacy (pre-1.4.0) slot recovery had gone stale.** The recovery candidates
+  were expressed relative to the CURRENT config size, so when the config grew in
+  1.5.0 they silently shifted - slots written by config v8, v10 and v11 firmware
+  would no longer be recognized during migration (v9 still matched by
+  coincidence). Recovery now brute-force scans every plausible record length and
+  validates by CRC, which recovers records from ANY historical layout and can
+  never go stale again. Affects only users upgrading directly from <=1.3.1 with
+  surviving legacy slots; already-migrated v2 slots were never at risk.
+- **v2 slot records with a zero body length could false-validate** as a
+  degenerate record; now rejected outright.
+
 ## [1.6.3] — 2026-07-13
 
 ### Changed
