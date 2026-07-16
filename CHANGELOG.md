@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented here.
 
+## [1.9.0] — 2026-07-16
+
+### Added
+- **16 profile slots** (was 8). Slots occupy 512 bytes each, 8 per 4 KB flash
+  sector; the store now spans two sectors. Slots 1-8 remain at their exact
+  pre-1.9.0 flash location - existing saved profiles carry over IN PLACE with no
+  migration - and slots 9-16 live in a new sector growing downward, away from the
+  config sector and the Bluetooth link-key bank. Sectors are erased and rewritten
+  independently, so saving a slot never touches the other sector. Automation
+  profile-overrides accept "slot 1".."slot 16"; re-run ds5-setup.bat (or update
+  slot-activate.html) for the extended range. Adding further sectors later is a
+  one-constant change (~zero firmware weight: slots cost flash sectors, not
+  code or RAM).
+
+## [1.8.0] — 2026-07-16
+
+### Added
+- **Trigger activation dead zone** (per trigger, 0=off, 1-9): below the chosen
+  zone the GAME sees the trigger as untouched (analog forced to 0, digital press
+  bit cleared) - the action registers only once the pull reaches the zone. Fixes
+  hair-trigger games where the shot fires before the resistance/detent/bow zone
+  is reached, breaking the feel: set the dead zone to match your effect's zone
+  and the shot lands exactly where the squeeze says it should. All internal
+  effects (gating, kick, shapes) always read the RAW trigger, so the feel
+  machinery is unaffected; the mask applies to everything downstream identically
+  (games, DS4Windows, Steam Input).
+
+### Notes
+- The analog value the game sees jumps from 0 to the threshold value on crossing
+  (by design - this targets button-like trigger actions). Not intended for analog
+  driving inputs: a gas pedal with a dead zone would lose its lower range.
+
 ## [1.7.1] — 2026-07-16
 
 ### Fixed

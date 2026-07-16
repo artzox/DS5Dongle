@@ -147,6 +147,7 @@ const SECTIONS = [
     [0x4d,'at_shape','u8','Resistance shape','select',[[0,'Constant'],[1,'Ramp (A \u2192 B)'],[2,'Two-stage detent']]],
     [0x4e,'at_strength_b','u8','Strength B (ramp end / detent wall)','number',[0,100]],
     [0x4f,'at_detent_pos','u8','Detent zone (two-stage shape)','number',[0,9]],
+    [0x53,'at_deadzone','u8','Activation dead zone (0=off; game registers press from zone N)','number',[0,9]],
     [0x39,'at_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
     [0x44,'at_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
     [0x3b,'at_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
@@ -160,6 +161,7 @@ const SECTIONS = [
     [0x50,'at_l2_shape','u8','Resistance shape','select',[[0,'Constant'],[1,'Ramp (A \u2192 B)'],[2,'Two-stage detent']]],
     [0x51,'at_l2_strength_b','u8','Strength B (ramp end / detent wall)','number',[0,100]],
     [0x52,'at_l2_detent_pos','u8','Detent zone (two-stage shape)','number',[0,9]],
+    [0x54,'at_l2_deadzone','u8','Activation dead zone (0=off; game registers press from zone N)','number',[0,9]],
     [0x47,'at_l2_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
     [0x49,'at_l2_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
     [0x48,'at_l2_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
@@ -334,7 +336,7 @@ async function _refreshSlotsOnce(){
     return;
   }
   let rows = '';
-  for (let i = 0; i < 8; i++){
+  for (let i = 0; i < 16; i++){ // fw >= 1.9.0: 16 slots (older fw reports 9+ as empty)
     let info = await hidLocked(() => slotInfo(i));
     if (info === null){
       // Freshly re-enumerated devices can miss the first queries; retry
@@ -819,7 +821,7 @@ setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && documen
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.7.1</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.9.0</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
