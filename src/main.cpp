@@ -49,12 +49,39 @@ uint8_t interrupt_in_data[63] = {
 critical_section_t report_cs;
 volatile bool report_dirty = false;
 
+// Trigger activation dead zone (v1.8.0): mask what the HOST sees until the pull
+// reaches the configured zone - analog forced to 0 and the digital press bit
+// cleared, so games that fire on a hair-trigger register the action exactly where
+// the resistance/detent/bow feel says they should. Applied ONLY to the outbound
+// report copy: every internal consumer (AT gating, kick, shapes, gyro) keeps
+// reading the raw trigger. Report body: [4]=L2 analog, [5]=R2 analog,
+// [8] bit2=L2 pressed, bit3=R2 pressed. Zone N starts at N*25.5 counts.
+static inline void apply_trigger_deadzone(uint8_t *r) {
+    const auto &c = get_config();
+    if (c.at_deadzone) {        // R2
+        const uint8_t thr = (uint8_t)(((uint16_t)c.at_deadzone * 51u) / 2u);
+        if (r[5] < thr) { r[5] = 0; r[8] &= (uint8_t)~0x08; }
+    }
+    if (c.at_l2_deadzone) {     // L2
+        const uint8_t thr = (uint8_t)(((uint16_t)c.at_l2_deadzone * 51u) / 2u);
+        if (r[4] < thr) { r[4] = 0; r[8] &= (uint8_t)~0x04; }
+    }
+}
+
 void __not_in_flash_func(interrupt_loop)() {
     if (!tud_hid_ready()) return;
 
     // TODO: Refactor for better code reuse
     if (get_config().polling_rate_mode != 2) {
-        if (!tud_hid_report(0x01, interrupt_in_data, 63)) {
+        const auto &cdz = get_config();
+        if (cdz.at_deadzone || cdz.at_l2_deadzone) {
+            static uint8_t dz_report[63];
+            memcpy(dz_report, interrupt_in_data, 63);
+            apply_trigger_deadzone(dz_report);
+            if (!tud_hid_report(0x01, dz_report, 63)) {
+                printf("[USBHID] tud_hid_report error\n");
+            }
+        } else if (!tud_hid_report(0x01, interrupt_in_data, 63)) {
             printf("[USBHID] tud_hid_report error\n");
         }
         return;
@@ -75,6 +102,7 @@ void __not_in_flash_func(interrupt_loop)() {
 
     // Only send to TinyUSB if we actually grabbed fresh data
     if (should_send) {
+        apply_trigger_deadzone(safe_report); // no-op when both dead zones are 0
         if (!tud_hid_report(0x01, safe_report, 63)) {
             printf("[USBHID] tud_hid_report error\n");
 

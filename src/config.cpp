@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 13;
+constexpr uint16_t CONFIG_VERSION = 14;
 // btstack's TLV flash bank (BT link keys + this project's pairing blacklist tag)
 // occupies the LAST TWO flash sectors by pico-sdk default
 // (PICO_FLASH_BANK_STORAGE_OFFSET) - and config + profile slots used to sit in
@@ -173,6 +173,8 @@ void config_valid() {
     if (body->at_l2_shape > 2) body->at_l2_shape = 0;
     if (body->at_l2_strength_b > 100) body->at_l2_strength_b = 70;
     if (body->at_l2_detent_pos > 9) body->at_l2_detent_pos = 5;
+    if (body->at_deadzone > 9) body->at_deadzone = 0;
+    if (body->at_l2_deadzone > 9) body->at_l2_deadzone = 0;
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
@@ -284,7 +286,16 @@ void set_config(const uint8_t *new_config, const uint16_t len) {
 constexpr uint32_t SLOTS_FLASH_OFFSET        = PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE;
 constexpr uint32_t LEGACY_SLOTS_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - 2 * FLASH_SECTOR_SIZE;
 static_assert(SLOTS_FLASH_OFFSET % FLASH_SECTOR_SIZE == 0);
-constexpr uint32_t SLOT_STRIDE = FLASH_SECTOR_SIZE / SLOT_COUNT; // 512
+constexpr uint32_t SLOT_STRIDE = FLASH_SECTOR_SIZE / SLOTS_PER_SECTOR; // 512
+static_assert(SLOT_COUNT % SLOTS_PER_SECTOR == 0, "whole sectors only");
+// Slots span multiple sectors (v1.9.0: 16 slots = 2 sectors). Sector 0 stays at
+// the original -4 location so pre-existing slots 1-8 are preserved IN PLACE with
+// no migration; additional sectors grow DOWNWARD (-5, -6, ...), away from the
+// config sector (-3) and the btstack bank (-2/-1). Each sector is still erased
+// and rewritten independently, so saving slot 12 never touches slots 1-8.
+static uint32_t slot_sector_offset(uint8_t sector) {
+    return PICO_FLASH_SIZE_BYTES - (4u + sector) * FLASH_SECTOR_SIZE;
+}
 constexpr uint32_t SLOT_MAGIC_V1 = 0x53355344; // "DS5S" — legacy: fixed-size body, layout-fragile
 constexpr uint32_t SLOT_MAGIC_V2 = 0x54355344; // "DS5T" — v2: explicit body_len, survives body growth
 
@@ -323,8 +334,7 @@ static const uint8_t *flash_slot_raw(uint8_t idx) {
 // Unified reader: returns true and fills name/body if the slot holds a valid
 // record in ANY known format. Missing tail bytes (older, smaller bodies) are
 // 0xFF-filled so config_valid() lands them on defaults.
-static bool slot_read_at(uint32_t base_offset, uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], Config_body &body_out) {
-    const uint8_t *p = flash_slot_raw_at(base_offset, idx);
+static bool slot_read_ptr(const uint8_t *p, uint8_t name_out[SLOT_NAME_LEN], Config_body &body_out) {
     uint32_t magic;
     memcpy(&magic, p, 4);
     if (magic == SLOT_MAGIC_V2) {
@@ -368,20 +378,31 @@ static bool slot_read_at(uint32_t base_offset, uint8_t idx, uint8_t name_out[SLO
 // doesn't live on a task stack; only touched from the USB command path.
 alignas(4) static uint8_t slot_sector_image[FLASH_SECTOR_SIZE];
 
+static uint32_t slot_op_offset = SLOTS_FLASH_OFFSET; // which sector the op targets
 static void slots_flash_op(void *) {
     const uint32_t interrupts = save_and_disable_interrupts();
-    flash_range_erase(SLOTS_FLASH_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(SLOTS_FLASH_OFFSET, slot_sector_image, FLASH_SECTOR_SIZE);
+    flash_range_erase(slot_op_offset, FLASH_SECTOR_SIZE);
+    flash_range_program(slot_op_offset, slot_sector_image, FLASH_SECTOR_SIZE);
     restore_interrupts(interrupts);
 }
 
+// Linear-base reader: used ONLY for the legacy (pre-1.4.0) location during boot
+// migration, where all 8 slots were contiguous in one sector.
+static bool slot_read_at(uint32_t base_offset, uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], Config_body &body_out) {
+    return slot_read_ptr(flash_slot_raw_at(base_offset, idx), name_out, body_out);
+}
+// Sector-mapped reader for the live slot store.
 static bool slot_read(uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], Config_body &body_out) {
-    return slot_read_at(SLOTS_FLASH_OFFSET, idx, name_out, body_out);
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(
+        XIP_BASE + slot_sector_offset(idx / SLOTS_PER_SECTOR) + (idx % SLOTS_PER_SECTOR) * SLOT_STRIDE);
+    return slot_read_ptr(p, name_out, body_out);
 }
 
 bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len) {
     if (idx >= SLOT_COUNT) return false;
-    memcpy(slot_sector_image, reinterpret_cast<const void *>(XIP_BASE + SLOTS_FLASH_OFFSET), FLASH_SECTOR_SIZE);
+    const uint32_t sec_off = slot_sector_offset(idx / SLOTS_PER_SECTOR);
+    const uint8_t  local   = idx % SLOTS_PER_SECTOR;
+    memcpy(slot_sector_image, reinterpret_cast<const void *>(XIP_BASE + sec_off), FLASH_SECTOR_SIZE);
     SlotRecordV2 rec{};
     rec.magic = SLOT_MAGIC_V2;
     rec.body_len = (uint16_t)sizeof(Config_body);
@@ -389,8 +410,9 @@ bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len) {
     if (name && name_len) memcpy(rec.name, name, (name_len < SLOT_NAME_LEN) ? name_len : SLOT_NAME_LEN);
     rec.body = config.body;
     rec.crc32 = crc32(rec.name, (uint32_t)SLOT_NAME_LEN + sizeof(Config_body));
-    memset(slot_sector_image + idx * SLOT_STRIDE, 0xff, SLOT_STRIDE);
-    memcpy(slot_sector_image + idx * SLOT_STRIDE, &rec, sizeof(rec));
+    memset(slot_sector_image + local * SLOT_STRIDE, 0xff, SLOT_STRIDE);
+    memcpy(slot_sector_image + local * SLOT_STRIDE, &rec, sizeof(rec));
+    slot_op_offset = sec_off;
     int rc = flash_safe_execute(slots_flash_op, nullptr, 500);
     if (rc != PICO_OK) {
         printf("[Config] slot_save flash_safe_execute failed: %d\n", rc);
@@ -462,6 +484,7 @@ static void migrate_legacy_slots() {
         migrated++;
     }
     if (migrated) {
+        slot_op_offset = slot_sector_offset(0);
         if (flash_safe_execute(slots_flash_op, nullptr, 1000) == PICO_OK)
             printf("[Config] migrated %u profile slot(s) from legacy sector\n", migrated);
     }

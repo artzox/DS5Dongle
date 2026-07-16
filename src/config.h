@@ -120,6 +120,13 @@ struct __attribute__((packed)) Config_body {
     uint8_t  at_l2_shape;       // L2 shape 0-2
     uint8_t  at_l2_strength_b;  // L2 strength B [0-100]
     uint8_t  at_l2_detent_pos;  // L2 detent zone 0-9 (shape 2)
+    // Trigger activation dead zone (v1.8.0): below the configured zone the HOST
+    // sees the trigger untouched (analog 0, digital bit cleared) - the game's
+    // action registers only once the pull reaches the zone, aligning early-firing
+    // games with the resistance/detent/bow feel. Internal effects (gating, kick,
+    // shapes) always see the RAW trigger. 0 = off, 1-9 = first registered zone.
+    uint8_t  at_deadzone;       // R2: 0=off, 1-9 first zone the host sees
+    uint8_t  at_l2_deadzone;    // L2: 0=off, 1-9 first zone the host sees
 };
 
 struct __attribute__((packed)) Config {
@@ -138,7 +145,8 @@ bool config_save();
 // below the active-config sector). Saving a slot is a rare manual portal
 // action; activating one at game launch is a single atomic command instead of
 // a 30-field write.
-constexpr uint8_t SLOT_COUNT = 8;
+constexpr uint8_t SLOT_COUNT = 16;       // v1.9.0: 16 (was 8) - 8 per flash sector
+constexpr uint8_t SLOTS_PER_SECTOR = 8;  // 512-byte stride in a 4 KB sector
 constexpr uint8_t SLOT_NAME_LEN = 16;
 bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len); // current config.body -> slot
 bool slot_activate(uint8_t idx, bool &needs_reenum);                // slot -> active config + flash
