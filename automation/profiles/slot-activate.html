@@ -28,29 +28,13 @@ async function run(gesture){
     if(!device&&gesture){const p=await navigator.hid.requestDevice({filters:[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}]});device=pickDs5(p)||(p&&p[0]);}
     if(!device){fail('No granted device - click to connect and activate slot '+slot+'.');return;}
     if(!device.opened)await device.open();
-    let r=null,sentOk=false;
-    // Up to 4 attempts with growing delays. Activation is idempotent, and replies
-    // can be lost transiently: flash-write USB stalls, another open page on the
-    // same device (config portal tab) consuming feature reports, or a mid-apply
-    // reconnect. The activation itself virtually always succeeds even when the
-    // confirmation races - so a missing REPLY is never treated as failure. Only
-    // an explicit firmware error reply, or failing to SEND at all, is a failure.
-    for(let a=0;a<4&&!(r&&r[2]===0x00);a++){
-      if(a)await sleep(600+a*500);
-      if(a===2){try{await device.close();await sleep(250);await device.open();}catch(_){ }} // fresh handle mid-way
-      try{await sendCmd(0x09,[slot-1]);sentOk=true;}catch(_){continue;}
+    let r=null;
+    for(let a=0;a<2&&!(r&&r[2]===0x00);a++){ // one silent retry (flash settle)
+      if(a)await sleep(800);
+      await sendCmd(0x09,[slot-1]);
       r=await reply(0x09,slot-1);
     }
-    if(r&&r[2]!==0x00){fail('Slot '+slot+' activation failed: empty slot, or firmware older than 1.1.2.');return;}
-    if(!r){
-      if(!sentOk){fail('Could not reach the controller to activate slot '+slot+' - click to connect and retry.');return;}
-      // Sent but unconfirmed: another page (usually the portal tab) is holding the
-      // reply channel. The activation almost certainly applied - do not block.
-      b.style.background='#3f3f1d';
-      b.textContent='Slot '+slot+' activation sent (unconfirmed - close the portal tab if this repeats).';
-      setTimeout(()=>{try{window.close();}catch(_){}} ,2500);
-      return;
-    }
+    if(!r||r[2]!==0x00){fail('Slot '+slot+' activation failed (empty slot, or firmware older than 1.1.2).');return;}
     if(r[4]===1){b.textContent='Slot '+slot+' active - device re-enumerating...';try{await sendCmd(0x03);}catch(_){ }}
     b.style.background='#14532d';b.textContent='Profile slot '+slot+' activated \u2713';
     document.title='DS5 Bridge Config';
