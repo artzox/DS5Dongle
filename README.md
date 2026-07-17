@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.9.0**
+**Version 1.11.0**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -90,7 +90,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.9.0.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.11.0.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -119,7 +119,7 @@ surprise; apply them in the portal and save.)
 | Setting | Value |
 |---|---|
 | Mode | Off (switch to Mix or Replace per game) |
-| Intensity (%) | 80 |
+| Intensity (%) | 80 Scales the DERIVED auto-haptics only; in Mix mode native ch 2/3 pass through unscaled (see ds5audio `--map` note) |
 | Smoothness | 40 |
 | Noise Gate | 20 |
 | LP Cutoff (Hz) | 100 |
@@ -192,11 +192,30 @@ The portal groups settings into the sections below.
 | Intensity (%) | 0–200 | 100 | Strength of the audio-derived haptics (curved response) |
 | Smoothness | 0–100 | 40 | Higher = smoother/longer decay; lower = snappier |
 | Noise Gate | 0–100 | 20 | Suppresses quiet content (dialog/ambience) below a threshold |
+| Native Passthrough in Mix (%) | 0–100 | 100 | MIX MODE ONLY: level of the native ch3/4 haptic stream mixed under the derived haptics. See "Choosing the passthrough level" below |
 | LP Cutoff (Hz) | 30–200 | 60 | Upper edge of the haptics band — only audio **below** this drives haptics (content above never reaches the actuators) |
 | Frequency Split Crossover (Hz) | 0 / 30–200 | 0 (off) | Divides the haptics band in two at this frequency; 0 = single-band (identical to pre-split firmware). Must sit **below** LP Cutoff |
 | Low Band Gain | 0–100 | 100 | Contribution of content **below** the crossover (impacts, explosions, engine weight) |
 | High Band Gain | 0–100 | 100 | Contribution of the crossover..cutoff range (music bass, voice fundamentals) — lower it to tame music/dialog-driven buzz |
 | Filter Slope | 6 / 12 / 24 dB/oct | 12 | Steeper rejects voice above the cutoff more aggressively |
+
+#### Choosing the passthrough level (Native Passthrough in Mix)
+
+In **Mix** mode the actuators receive three components: the **native ch3/4
+stream** (scaled by this fader), the **derived** auto-haptics (scaled by
+Intensity, shaped by the frequency split and gate), and **converted rumble**
+(its own strength knob). The fader exists because ch3/4 mean different things in
+different setups:
+
+| Scenario | Mode | Set passthrough to | Why |
+|---|---|---|---|
+| Native game, passthrough profile | Off | (ignored) | With auto-haptics Off, ch3/4 always pass at full — the game's own HD haptics. The fader has no effect in Off |
+| Native game + auto-haptics on top | Mix | **100** | Classic Mix: the game's real haptics plus derived augmentation |
+| Non-native game (DS4Windows / XB360 / DS4) | Mix | **0** (or taste) | ds5audio's default `duplicate` mapping copies the game audio onto ch3/4 — an uncontrollable shadow of the derived haptics. At 0, Intensity/split/gate control the whole output; game rumble stays on Converted Rumble Strength. With the fader at 0 the ds5audio `--map` choice no longer matters in Mix |
+| Any game | Replace | (ignored) | Replace discards ch3/4 by definition — derived only |
+
+Rule of thumb: **the fader answers "is there anything REAL on ch3/4?"** Native
+game = yes, keep 100. Non-native = no (it's a duplicate), set 0.
 | Auto-mute Speaker (Replace) | on/off | on | Mute controller speaker in Replace mode |
 | Auto-mute Speaker (Mix) | on/off | off | Mute controller speaker in Mix mode |
 | Lightbar Off in Replace Mode | on/off | off | Kills the lightbar glow in Replace (e.g. blue in Xbox360 mode) |
@@ -382,6 +401,18 @@ is high-passed to protect the small speaker from low-frequency popping.
   on a stock DualSense over BT — so a trace of imperfection can remain even at
   48 kHz; muting the speaker in Mix mode and using haptics only avoids the pipeline
   altogether.)
+- **Game crashes at launch when the automation runs (or when any window appears)
+  — switch the game to Borderless.** Some games — especially older engines and
+  remasters (e.g. Nightdive's KEX titles) — run in EXCLUSIVE fullscreen and
+  mishandle the device-lost event that any focus loss triggers, crashing with a
+  D3D "invalid call" / render-target error. The automation's profile window (or a
+  console window from running `python ds5audio.py` manually — use `pythonw` to
+  avoid one) is enough to trip it, which makes the crash look automation-related
+  when the real fragility is the display mode. Diagnostic: launch the game bare
+  and alt-tab — if it crashes the same way, it's the game. Fix: set the game to
+  **Borderless/Windowed** — no exclusive mode switches, focus changes become
+  harmless, and the automation works unmodified (borderless has effectively no
+  performance cost on modern Windows).
 - **Bluetooth vs USB latency.** Native haptics over Bluetooth are slightly less
   tight than over USB — this is inherent to the BT transport (slot scheduling vs
   USB's fixed microframes) and is not tunable away in firmware. A strong link
@@ -494,14 +525,14 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.9.0.uf2` — the firmware (flash this; reports version 1.9.0)
+- `ds5-v1.11.0.uf2` — the firmware (flash this; reports version 1.11.0)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.9.0)
+- `README.md` — this file (docs version 1.11.0)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 

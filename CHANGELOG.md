@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented here.
 
+## [1.11.0] — 2026-07-17
+
+### Added
+- **Three more gyro aiming gates**: "Only while R2 held" (analog, same threshold
+  as the L2 gate), "Only while L1 held" and "Only while R1 held" (digital), for
+  games that don't put aiming on L2. Sit alongside the existing L2/touchpad/
+  ratchet modes - nothing removed, values unchanged, existing profiles
+  unaffected.
+
+## [1.10.0] — 2026-07-16
+
+### Added
+- **Native Passthrough in Mix (%)** (0-100, default 100): per-profile fader on
+  the ch3/4 native-haptics contribution in MIX mode. Only Mix consumes it: Off
+  always passes ch3/4 at full (that is how native passthrough profiles work) and
+  Replace always discards them, so the fader is ignored in both. Use cases:
+  - **Mix + native game -> 100**: classic Mix, game haptics + derived on top.
+  - **Mix + non-native game (DS4Windows/XB360) -> 0 (or taste)**: removes the
+    ds5audio `duplicate` copy of the game audio from ch3/4, so Intensity, the
+    frequency split and the gate control the WHOLE haptic output (converted
+    rumble keeps its own strength knob). This is the per-profile equivalent of
+    running ds5audio with `--map front` - with the fader at 0 the --map choice no
+    longer matters in Mix.
+  Default 100 = pre-1.10.0 behavior; existing profiles unchanged.
+
+## [1.9.1] — 2026-07-16
+
+### Fixed
+- **Auto-haptics Intensity 0 was silently reset to 100** by validation (fresh-
+  flash protection conflating a legitimate 0 with garbage). 0 now means what it
+  says: the derived auto-haptics are silenced.
+
+### Clarified (documented, not a code change)
+- **In Mix mode the native haptic channels (ch 2/3) pass through UNSCALED** by
+  Intensity, the frequency split, or the gate - those controls shape only the
+  DERIVED (audio-envelope) component. With ds5audio's default `--map duplicate`,
+  ch 2/3 carry a copy of the game audio, so Mix feels like "derived + a full-
+  strength shadow of it that no knob touches". If auto-haptics should own the
+  actuators (typical for DS4Windows/Xbox360 games), run ds5audio with
+  `--map front` (audio to ch 0/1 only, ch 2/3 silent): Intensity, the split and
+  the gate then control everything, with converted rumble on its own strength
+  knob. Keep `duplicate` only when you WANT raw bass passthrough as part of the
+  feel. Also note: Intensity values beyond ~120 compress toward the same felt
+  strength (soft-limit saturation) - differences are clearest in the 0-120 range.
+
 ## [1.9.0] — 2026-07-16
 
 ### Added
