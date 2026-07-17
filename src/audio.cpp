@@ -498,6 +498,10 @@ void __not_in_flash_func(audio_loop)() {
                 // the same bass band keeps only the felt low-frequency content.
                 lp_h_l += lp_a * (h_l - lp_h_l);
                 lp_h_r += lp_a * (h_r - lp_h_r);
+                // Per-profile fader on the native contribution (v1.10.0): 0 mutes
+                // ch3/4 in Mix so the derived part (Intensity/split/gate) owns the
+                // actuators - the per-profile equivalent of ds5audio --map front.
+                const float native_lvl = get_config().mix_native_level / 100.0f;
                 // Converted rumble: DS4Windows sends motor intensities (0-255) for
                 // Xbox360/DS4 emulation. Turn them into an actuator vibration using
                 // the same 90 Hz carrier and blend in, scaled by a configurable
@@ -505,7 +509,7 @@ void __not_in_flash_func(audio_loop)() {
                 const float rumble_str = get_config().rumble_haptic_strength / 100.0f;
                 const float rl = (g_rumble_l / 255.0f) * carrier * rumble_str;
                 const float rr = (g_rumble_r / 255.0f) * carrier * rumble_str;
-                float m_l = lp_h_l + al + rl, m_r = lp_h_r + ar + rr;
+                float m_l = lp_h_l * native_lvl + al + rl, m_r = lp_h_r * native_lvl + ar + rr;
                 h_l = m_l / (1.0f + (m_l < 0.0f ? -m_l : m_l));
                 h_r = m_r / (1.0f + (m_r < 0.0f ? -m_r : m_r));
             }

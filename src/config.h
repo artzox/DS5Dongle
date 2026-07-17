@@ -127,6 +127,13 @@ struct __attribute__((packed)) Config_body {
     // shapes) always see the RAW trigger. 0 = off, 1-9 = first registered zone.
     uint8_t  at_deadzone;       // R2: 0=off, 1-9 first zone the host sees
     uint8_t  at_l2_deadzone;    // L2: 0=off, 1-9 first zone the host sees
+    // Mix-mode native passthrough level (v1.10.0). In Mix, ch3/4 pass through to
+    // the actuators UNSCALED by Intensity/split/gate - correct for real native
+    // haptics, but with ds5audio's `duplicate` mapping ch3/4 carry a copy of the
+    // game audio, drowning the adjustable derived part. This fader scales the
+    // passthrough per profile: 100 = classic native Mix, 0 = derived+rumble only
+    // (auto-haptics own the actuators; the ds5audio --map choice stops mattering).
+    uint8_t  mix_native_level;  // [0-100] ch3/4 contribution in Mix (default 100)
 };
 
 struct __attribute__((packed)) Config {

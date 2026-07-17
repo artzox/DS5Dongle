@@ -134,9 +134,14 @@ static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
     //   4 = always on, touching the touchpad PAUSES gyro (ratchet: re-center like
     //       lifting a mouse)
     const bool touch = !(d[32] & 0x80);            // touchpad finger 1 down
-    if (cfg.gyro_mode == 1 && d[4] < 30) return;
+    if (cfg.gyro_mode == 1 && d[4] < 30) return;                 // L2 held (aim)
     if (cfg.gyro_mode == 3 && !touch)    return;
     if (cfg.gyro_mode == 4 && touch)     return;
+    // v1.11.0: additional gates for games that don't aim on L2. Same 30-count
+    // threshold for the R2 analog gate; shoulders are digital (bit0=L1, bit1=R1).
+    if (cfg.gyro_mode == 5 && d[5] < 30)         return;         // R2 held
+    if (cfg.gyro_mode == 6 && !(d[8] & 0x01))    return;         // L1 held
+    if (cfg.gyro_mode == 7 && !(d[8] & 0x02))    return;         // R1 held
     auto rd16 = [&](int off) -> int32_t {
         return (int16_t)((uint16_t)d[off] | ((uint16_t)d[off + 1] << 8));
     };

@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 14;
+constexpr uint16_t CONFIG_VERSION = 15;
 // btstack's TLV flash bank (BT link keys + this project's pairing blacklist tag)
 // occupies the LAST TWO flash sectors by pico-sdk default
 // (PICO_FLASH_BANK_STORAGE_OFFSET) - and config + profile slots used to sit in
@@ -123,7 +123,7 @@ void config_valid() {
         printf("[Config] disable_speaker is invalid\n");
     }
     if (body->auto_haptics_enable > 2) body->auto_haptics_enable = 0;
-    if (body->auto_haptics_gain == 0 || body->auto_haptics_gain > 200) body->auto_haptics_gain = 100;
+    if (body->auto_haptics_gain > 200) body->auto_haptics_gain = 100; // 0 is a VALID value (silence); >200 covers fresh-flash 0xFF
     if (body->auto_haptics_lowpass_hz < 20 || body->auto_haptics_lowpass_hz > 400) body->auto_haptics_lowpass_hz = 60;
     if (body->auto_mute_replace > 1) body->auto_mute_replace = 1;
     if (body->auto_mute_mix > 1) body->auto_mute_mix = 0;
@@ -175,6 +175,7 @@ void config_valid() {
     if (body->at_l2_detent_pos > 9) body->at_l2_detent_pos = 5;
     if (body->at_deadzone > 9) body->at_deadzone = 0;
     if (body->at_l2_deadzone > 9) body->at_l2_deadzone = 0;
+    if (body->mix_native_level > 100) body->mix_native_level = 100; // 0 is valid (mute passthrough)
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength
@@ -185,7 +186,7 @@ void config_valid() {
     if (body->at_threshold < 1) body->at_threshold = 30;   // ~12% pull arms it
     if (body->at_start_pos > 9) body->at_start_pos = 0;    // resist from the start of travel
     // Gyro aiming defaults (OFF by default).
-    if (body->gyro_mode > 4) body->gyro_mode = 0;
+    if (body->gyro_mode > 7) body->gyro_mode = 0; // 5=R2, 6=L1, 7=R1 gates (v1.11.0)
     if (body->gyro_sens < 1 || body->gyro_sens > 100) body->gyro_sens = 50;
     if (body->gyro_axis > 1) body->gyro_axis = 0;
     if (body->gyro_invert > 3) body->gyro_invert = 0;
