@@ -64,8 +64,12 @@ $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
 $DS5Dir        = $scriptDir
 $NativeList    = Join-Path $DS5Dir "native-games.txt"
-$NativeProfile = Join-Path $DS5Dir "profiles\native-off.autoapply.html"
-$AudioProfile  = Join-Path $DS5Dir "profiles\audio-mix.autoapply.html"
+# Default profiles: an .html filename in profiles\, OR "slot N" (N = 1-16) to
+# activate a profile saved ON THE DONGLE - one atomic command via the self-
+# closing slot page: faster than a field-by-field html apply, and no window
+# stays open. Example: $AudioProfile = "slot 1"
+$NativeProfile = "native-off.autoapply.html"
+$AudioProfile  = "audio-mix.autoapply.html"
 $AudioScript   = Join-Path $DS5Dir "ds5audio.py"
 $AudioArgs     = @()   # e.g. @("--capture-name","SONY TV") to pin a capture device
 $PythonExe     = ""    # OPTIONAL: full path to the python.exe that has PyAudioWPatch
@@ -220,6 +224,22 @@ function Apply-Profile($htmlPath, $query = "") {
     } catch { Log "FAIL applying $htmlPath : $($_.Exception.Message)" }
 }
 
+# Turn a profile SPEC - "slot N" / "slot:N" (on-dongle slot, fw 1.1.2+) or a
+# profile .html filename - into the page + query to open. $null if unusable.
+function Resolve-DS5Profile([string]$spec) {
+    if (-not $spec) { return $null }
+    if ($spec -match '^(?i)slot[\s:]*([1-9]|1[0-6])$') {
+        $p = Join-Path (Join-Path $DS5Dir "profiles") "slot-activate.html"
+        if (Test-Path -LiteralPath $p) { return @{ Path = $p; Query = "?slot=$($Matches[1])" } }
+        Log "WARN slot-activate.html missing - re-run ds5-setup"
+        return $null
+    }
+    $p = Join-Path (Join-Path $DS5Dir "profiles") $spec
+    if (Test-Path -LiteralPath $p) { return @{ Path = $p; Query = "" } }
+    Log "WARN profile not found: $p"
+    return $null
+}
+
 # Build interpreter candidates in preference order. Do NOT exclude the
 # Microsoft Store WindowsApps paths outright: when Python is installed FROM
 # the Store, the real interpreter lives behind those exact paths. Non-Store
@@ -283,23 +303,13 @@ if ($GrantSetup) {
 }
 
 # --- Decide which profile to apply and whether to run the capture ---
-$profileToApply = $null; $startAudio = $false
+$profileToApply = $null; $startAudio = $false; $appliedSpec = $null
 $ApplyQuery = ""
 if ($overrideProfile) {
-    # "slot N" (or "slot:N") activates an on-dongle profile slot (fw 1.1.2+)
-    # via the generic activator page - a single atomic command instead of a
-    # full field-by-field profile write.
-    if ($overrideProfile -match '^(?i)slot[\s:]*([1-9]|1[0-6])$') {
-        $p = Join-Path (Join-Path $DS5Dir "profiles") "slot-activate.html"
-        if (Test-Path -LiteralPath $p) {
-            $profileToApply = $p
-            $ApplyQuery = "?slot=$($Matches[1])"
-        } else { Log "WARN slot-activate.html missing - re-run ds5-setup; falling back to defaults" }
-    } else {
-        $p = Join-Path (Join-Path $DS5Dir "profiles") $overrideProfile
-        if (Test-Path -LiteralPath $p) { $profileToApply = $p }
-        else { Log "WARN override profile not found: $p - falling back to defaults" }
-    }
+    # Overrides and defaults share one resolver: 'slot N' or an html filename.
+    $res = Resolve-DS5Profile $overrideProfile
+    if ($res) { $profileToApply = $res.Path; $ApplyQuery = $res.Query; $appliedSpec = $overrideProfile }
+    else { Log "WARN override unusable: '$overrideProfile' - falling back to defaults" }
     if ($profileToApply) {
         if     ($overrideAudio -eq "audio")   { $startAudio = $true }
         elseif ($overrideAudio -eq "noaudio") { $startAudio = $false }
@@ -308,14 +318,17 @@ if ($overrideProfile) {
     }
 }
 if (-not $profileToApply) {
-    if ($isNative) { $profileToApply = $NativeProfile; $startAudio = $false; Log "native -> OFF profile, no capture" }
-    else           { $profileToApply = $AudioProfile;  $startAudio = $true }
+    $spec = if ($isNative) { $NativeProfile } else { $AudioProfile }
+    $res = Resolve-DS5Profile $spec
+    if ($res) { $profileToApply = $res.Path; $ApplyQuery = $res.Query; $appliedSpec = $spec }
+    if ($isNative) { $startAudio = $false; Log "native -> OFF profile, no capture" }
+    else           { $startAudio = $true }
 }
 # Remember whether the mix profile must be restored on exit. The stop script
 # reads this file - it works across separate powershell invocations (the .bat
 # path) and knows about overrides, unlike $global variables or a list recompute.
 try {
-    $stateVal = if ([System.IO.Path]::GetFileName($profileToApply) -ieq [System.IO.Path]::GetFileName($AudioProfile)) { "mix" } else { "restore-mix" }
+    $stateVal = if ($appliedSpec -eq $AudioProfile) { "mix" } else { "restore-mix" }
     Set-Content -LiteralPath (Join-Path $DS5Dir "ds5-last-start.txt") -Value $stateVal -Encoding ASCII
 } catch { }
 
@@ -402,7 +415,7 @@ $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
 $DS5Dir       = $scriptDir
 $NativeList   = Join-Path $DS5Dir "native-games.txt"
-$AudioProfile = Join-Path $DS5Dir "profiles\audio-mix.autoapply.html"
+$AudioProfile = "audio-mix.autoapply.html"   # or "slot N" - keep in sync with ds5-global-start.ps1
 $LogFile      = Join-Path $DS5Dir "ds5-automation.log"
 
 function Log($m) { $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"; Add-Content -LiteralPath $LogFile -Value "$ts  [stop]  $m" -Encoding UTF8 }
@@ -460,7 +473,15 @@ foreach ($p in (Get-DS5AudioProcs)) {
 Log "stopped $n audio capture process(es)"
 
 if ($wasNative) {
-    if (Test-Path -LiteralPath $AudioProfile) {
+    $restorePath = $null; $restoreQuery = ""
+    if ($AudioProfile -match '^(?i)slot[\s:]*([1-9]|1[0-6])$') {
+        $rp = Join-Path (Join-Path $DS5Dir "profiles") "slot-activate.html"
+        if (Test-Path -LiteralPath $rp) { $restorePath = $rp; $restoreQuery = "?slot=$($Matches[1])" }
+    } else {
+        $rp = Join-Path (Join-Path $DS5Dir "profiles") $AudioProfile
+        if (Test-Path -LiteralPath $rp) { $restorePath = $rp }
+    }
+    if ($restorePath) {
         $BrowserExe      = "msedge"  # keep in sync with ds5-global-start.ps1
         $MinimizeBrowser = $true
         $UseLocalServer  = $false    # keep in sync with ds5-global-start.ps1
@@ -527,8 +548,9 @@ if ($wasNative) {
             }
         }
         try {
-            $target = $AudioProfile
-            if ($UseLocalServer -and (Ensure-ProfileServer)) { $target = "http://127.0.0.1:$ProfilePort/" + [System.IO.Path]::GetFileName($AudioProfile) }
+            $target = $restorePath
+            if ($restoreQuery) { $target = ([System.Uri]$restorePath).AbsoluteUri + $restoreQuery }
+            if ($UseLocalServer -and (Ensure-ProfileServer)) { $target = "http://127.0.0.1:$ProfilePort/" + [System.IO.Path]::GetFileName($restorePath) + $restoreQuery }
             $b = Resolve-Browser
             if ($b) { Start-Process -FilePath $b -ArgumentList "--new-window", "`"$target`"" -ErrorAction Stop | Out-Null }
             else {
@@ -622,6 +644,20 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function isWakeKeyboardIface(d){const c=(d&&d.collections)||[];return c.length>0&&c.every(x=>x.usagePage===0x01&&x.usage===0x06);}
 function pickDs5(l){const m=(l||[]).filter(x=>x&&x.vendorId===SONY_VID&&(x.productId===DS5_PID||x.productId===DSE_PID));return m.find(x=>!isWakeKeyboardIface(x))||m[0]||null;}
 let device=null;
+async function releaseDevice(){try{if(device&&device.opened)await device.close();}catch(_){}}
+// Close the automation tab. A page the browser considers non-script-opened will
+// REFUSE window.close() silently - which used to leave the window open AND still
+// holding the HID device, breaking the next activation. So: always release the
+// device first (frees it for the next page even if the window lingers), try to
+// close, and if we're still alive a beat later, neutralize the page - drop the
+// body and flag the title so it can't claim the device and is visibly finished.
+async function finish(){await releaseDevice();
+  try{window.close();}catch(_){}
+  setTimeout(()=>{try{window.close();}catch(_){}
+    try{document.title='DS5 slot done - closable';document.body.innerHTML=
+      '<div id=\'b\' style=\'background:#14532d\'>Slot activated \u2713 - you can close this tab.</div>';
+    }catch(_){}}, 500);
+}
 async function sendCmd(id,args=[]){const p=new Uint8Array(63);p[0]=0x66;p[1]=id;args.forEach((b,i)=>p[2+i]=b);await device.sendFeatureReport(SET_REPORT,p);}
 async function reply(id,idx,tries=30){for(let t=0;t<tries;t++){await sleep(60);let r=null;
   try{const d=await device.receiveFeatureReport(GET_REPORT);r=new Uint8Array(d.buffer,d.byteOffset,d.byteLength);}catch(_){continue;} // mid-flash USB stall
@@ -660,13 +696,14 @@ async function run(gesture){
       // reply channel. The activation almost certainly applied - do not block.
       b.style.background='#3f3f1d';
       b.textContent='Slot '+slot+' activation sent (unconfirmed - close the portal tab if this repeats).';
-      setTimeout(()=>{try{window.close();}catch(_){}} ,2500);
+      setTimeout(finish,2500);
       return;
     }
     if(r[4]===1){b.textContent='Slot '+slot+' active - device re-enumerating...';try{await sendCmd(0x03);}catch(_){ }}
     b.style.background='#14532d';b.textContent='Profile slot '+slot+' activated \u2713';
     document.title='DS5 Bridge Config';
-    setTimeout(()=>{try{window.close();}catch(_){}} ,900); // automation tab: self-close
+    await releaseDevice();               // free the device NOW for the next activation
+    setTimeout(finish,900);              // automation tab: self-close (with fallback)
   }catch(e){fail('Error: '+e.message);}
 }
 run(false);
