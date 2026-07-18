@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## [1.12.0] — 2026-07-17
+
+### Added
+- **Automation: default profiles can be on-dongle slots.** `$NativeProfile`,
+  `$AudioProfile` (start script) and the exit-restore `$AudioProfile` (stop
+  script) now accept `"slot N"` (N = 1-16) as well as an .html filename - the
+  same syntax profile-overrides always used. A slot activation is one atomic
+  firmware command via the self-closing page: faster than a field-by-field html
+  apply, and no browser window stays open (kinder to fullscreen-fragile games).
+  Example: `$AudioProfile = "slot 1"`. Re-run ds5-setup.bat to regenerate.
+- **Weapon break trigger shape** (per trigger, 4th shape): the hardware Weapon
+  effect (0x25) - a rigid wall from the start position to the break point, then a
+  hardware-sharp SNAP-THROUGH release. The classic semi-auto shot break: tension,
+  clean give, free travel. Distinct from the two-stage detent (a bump with force
+  on both sides); here resistance ENDS at the break. Field reuse: start position
+  = wall start (hw 2-7), Detent zone = break point (hw 3-8, forced above start),
+  Strength A = wall force (Strength B unused). Pair with the Activation dead zone
+  at the break zone so the shot registers exactly at the snap.
+- **Effect leak Max Burst** (x5 ms, 0 = unlimited/off): caps how long one gate
+  opening may last. Transients (shots, impacts) end within the cap naturally;
+  SUSTAINED content (dialogue, music) used to hold the gate open and duplicate
+  the room audio - now it is cut at the cap, and a refractory keeps the gate shut
+  until the signal genuinely falls: one sustained sound = one short accent.
+  Reframes the leak as a PERCUSSION layer - run it louder, because bursts
+  punctuate instead of duplicating. Start at 30 (150 ms); Attack shapes the
+  onset, Decay shapes how the forced close fades out.
+
 ## [1.11.0] — 2026-07-17
 
 ### Added

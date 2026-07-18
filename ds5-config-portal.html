@@ -109,6 +109,7 @@ const SECTIONS = [
     [0x26,'effect_leak_output_hp_hz','u16','Effect Leak Output High-pass (Hz)','number',[50,2000]],
     [0x1f,'effect_leak_hp_hz','u16','Effect Leak Detection Band (Hz)','number',[100,5000]],
     [0x40,'effect_leak_lp_hz','u16','Effect Leak Output Low-pass (Hz) - high wall of the leak window','number',[500,12000]],
+    [0x56,'effect_leak_max_burst','u8','Max Burst (x5 ms, 0 = unlimited) - caps sustained sounds to one short accent','number',[0,100]],
     [0x41,'effect_leak_hold','u8','Effect Leak Gate Hold (x5 ms) - stops flutter/chop','number',[0,100]],
   ]},
   { title: 'Haptics & Audio', fields: [
@@ -145,9 +146,9 @@ const SECTIONS = [
     [0x2c,'at_strength','u8','Resistance strength','number',[0,100]],
     [0x2d,'at_threshold','u8','Arming threshold (L2 press depth)','number',[1,255]],
     [0x2e,'at_start_pos','u8','Resistance start position','number',[0,9]],
-    [0x4d,'at_shape','u8','Resistance shape','select',[[0,'Constant'],[1,'Ramp (A \u2192 B)'],[2,'Two-stage detent']]],
+    [0x4d,'at_shape','u8','Resistance shape','select',[[0,'Constant'],[1,'Ramp (A \u2192 B)'],[2,'Two-stage detent'],[3,'Weapon break (snap-through)']]],
     [0x4e,'at_strength_b','u8','Strength B (ramp end / detent wall)','number',[0,100]],
-    [0x4f,'at_detent_pos','u8','Detent zone (two-stage shape)','number',[0,9]],
+    [0x4f,'at_detent_pos','u8','Detent zone / break point','number',[0,9]],
     [0x53,'at_deadzone','u8','Activation dead zone (0=off; game registers press from zone N)','number',[0,9]],
     [0x39,'at_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
     [0x44,'at_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
@@ -159,9 +160,9 @@ const SECTIONS = [
     [0x43,'at_l2_strength','u8','Resistance strength','number',[0,100]],
     [0x45,'at_l2_threshold','u8','Arming threshold (R2 press depth)','number',[1,255]],
     [0x46,'at_l2_start_pos','u8','Resistance start position','number',[0,9]],
-    [0x50,'at_l2_shape','u8','Resistance shape','select',[[0,'Constant'],[1,'Ramp (A \u2192 B)'],[2,'Two-stage detent']]],
+    [0x50,'at_l2_shape','u8','Resistance shape','select',[[0,'Constant'],[1,'Ramp (A \u2192 B)'],[2,'Two-stage detent'],[3,'Weapon break (snap-through)']]],
     [0x51,'at_l2_strength_b','u8','Strength B (ramp end / detent wall)','number',[0,100]],
-    [0x52,'at_l2_detent_pos','u8','Detent zone (two-stage shape)','number',[0,9]],
+    [0x52,'at_l2_detent_pos','u8','Detent zone / break point','number',[0,9]],
     [0x54,'at_l2_deadzone','u8','Activation dead zone (0=off; game registers press from zone N)','number',[0,9]],
     [0x47,'at_l2_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
     [0x49,'at_l2_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
@@ -822,7 +823,7 @@ setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && documen
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.11.0</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.12.0</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>

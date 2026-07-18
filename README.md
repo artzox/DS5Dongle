@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.11.0**
+**Version 1.12.0**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -90,7 +90,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.11.0.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.12.0.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -138,6 +138,7 @@ surprise; apply them in the portal and save.)
 | Effect Leak Output High-pass (Hz) | 1000 |
 | Effect Leak Output Low-pass (Hz) | 8000 |
 | Effect Leak Gate Hold (x5 ms) | 20 |
+| Effect Leak Max Burst (x5 ms) | 0 (off; try 30) |
 | Effect Leak Detection Band (Hz) | 2500 |
 
 **Haptics & Audio**
@@ -227,6 +228,7 @@ game = yes, keep 100. Non-native = no (it's a duplicate), set 0.
 | Effect Leak Output High-pass (Hz) | 50–2000 | 200 | Low wall of the leak window (12 dB/oct) — removes deep bass that pops the speaker |
 | Effect Leak Output Low-pass (Hz) | 500–12000 | 8000 | High wall of the leak window (12 dB/oct) — cuts treble sizzle/crackle. With the high-pass forms a band-pass "capture window": only sound inside it leaks. Automatic make-up gain keeps loudness constant as you move the walls |
 | Effect Leak Gate Hold (×5 ms) | 0–100 | 20 (100 ms) | Minimum gate-open time per transient + hysteresis; stops the gate chattering (the "choppy/poppy" leak artifact) |
+| Effect Leak Max Burst (×5 ms) | 0–100 | 0 (off) | MAXIMUM gate-open time: cuts sustained sounds (dialogue, music) at the cap with a no-retrigger refractory — one short accent instead of duplicating the room audio; shots end within the cap naturally. Try 30 (150 ms) and raise leak volume: the leak becomes punctuation, not a second speaker |
 | Effect Leak Detection Band (Hz) | 100–5000 | 800 | Frequency band the transient detector listens to |
 
 ### Haptics & Audio
@@ -276,10 +278,10 @@ with the full set of settings below. The only shared control is **Kick follows**
 | Resistance strength | 0–100 | 70 | Resistance intensity (mapped to the effect's 0–7 range) |
 | Arming threshold | 1–255 | 30 | In "Gated by trigger" mode, how far the arming trigger must be pulled (~12% at default). Ignored in shoulder-gated mode (digital on/off) |
 | Start position | 0–9 | 0 | Trigger-travel zone where resistance begins (0 = from the start) |
-| Resistance shape | Constant / Ramp / Two-stage | Constant | Constant = flat Strength A. **Ramp** = linear A→B across the pull (racing: light→heavy gas, heavy→light brake). **Two-stage detent** = Strength A with a wall of Strength B at the detent zone — a tactile bump marking half-press from full-press (fire/alt-fire games) |
+| Resistance shape | Constant / Ramp / Two-stage / Weapon break | Constant | Constant = flat Strength A. **Ramp** = linear A→B across the pull (racing: light→heavy gas, heavy→light brake). **Two-stage detent** = Strength A with a wall of Strength B at the detent zone — a tactile bump marking half-press from full-press (fire/alt-fire games). **Weapon break** = rigid wall then hardware snap-through at the break point — the semi-auto shot break (Strength B unused) |
 | Strength B | 0–100 | 70 | Second strength: the ramp's end value, or the detent wall |
 | — Strength 0 in shapes | | | In Ramp/Two-stage, a strength of 0 means genuinely FREE travel (zone excluded): Ramp A=0 = free at rest building to B; Detent A=0 = a pure bump with free travel around it |
-| Detent zone | 0–9 | 5 | Travel zone of the two-stage wall (~half-press at 5) |
+| Detent zone / break point | 0–9 | 5 | Two-stage: the wall's zone. Weapon break: the snap-through point (hw 3–8, forced above start) |
 | Activation dead zone | 0–9 | 0 (off) | Below this zone the GAME sees the trigger untouched (no analog, no press bit) — the shot registers only past the zone. Aligns hair-trigger games with the resistance/detent/bow feel; internal effects always see the raw trigger. Not for analog gas/brake inputs |
 | Push-back kick strength | 0–100 | 0 (off) | Recoil intensity; scales the thump amplitude with the vibration envelope. 0 = no kick on that trigger (pure resistance) |
 | Kick style | Thump / Bow snap | Thump | Thump = vibration buzz (0x26). Bow snap = mechanical push-back via the Bow effect (0x22): the snap force presses the trigger back against the finger — sharper recoil, experimental (feel varies with hold depth) |
@@ -525,14 +527,14 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.11.0.uf2` — the firmware (flash this; reports version 1.11.0)
+- `ds5-v1.12.0.uf2` — the firmware (flash this; reports version 1.12.0)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.11.0)
+- `README.md` — this file (docs version 1.12.0)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
