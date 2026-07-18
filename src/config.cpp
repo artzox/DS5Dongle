@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 15;
+constexpr uint16_t CONFIG_VERSION = 16;
 // btstack's TLV flash bank (BT link keys + this project's pairing blacklist tag)
 // occupies the LAST TWO flash sectors by pico-sdk default
 // (PICO_FLASH_BANK_STORAGE_OFFSET) - and config + profile slots used to sit in
@@ -167,15 +167,16 @@ void config_valid() {
     if (body->ah_low_gain > 100) body->ah_low_gain = 100;
     if (body->ah_high_gain > 100) body->ah_high_gain = 100;
     // Trigger resistance shapes (fresh flash 0xFF lands on defaults)
-    if (body->at_shape > 2) body->at_shape = 0;
+    if (body->at_shape > 3) body->at_shape = 0;    // 3 = weapon break (v1.12.0)
     if (body->at_strength_b > 100) body->at_strength_b = 70;
     if (body->at_detent_pos > 9) body->at_detent_pos = 5;
-    if (body->at_l2_shape > 2) body->at_l2_shape = 0;
+    if (body->at_l2_shape > 3) body->at_l2_shape = 0;
     if (body->at_l2_strength_b > 100) body->at_l2_strength_b = 70;
     if (body->at_l2_detent_pos > 9) body->at_l2_detent_pos = 5;
     if (body->at_deadzone > 9) body->at_deadzone = 0;
     if (body->at_l2_deadzone > 9) body->at_l2_deadzone = 0;
     if (body->mix_native_level > 100) body->mix_native_level = 100; // 0 is valid (mute passthrough)
+    if (body->effect_leak_max_burst > 100) body->effect_leak_max_burst = 0; // 0=off; covers fresh-flash 0xFF
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength

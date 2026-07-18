@@ -134,6 +134,14 @@ struct __attribute__((packed)) Config_body {
     // passthrough per profile: 100 = classic native Mix, 0 = derived+rumble only
     // (auto-haptics own the actuators; the ds5audio --map choice stops mattering).
     uint8_t  mix_native_level;  // [0-100] ch3/4 contribution in Mix (default 100)
+    // Effect leak MAX BURST (v1.12.0): cap on how long one gate opening may last
+    // (x5 ms, 0 = off/unlimited). Transients (gunshots, impacts) end within the
+    // cap naturally; SUSTAINED content (dialogue, music) used to hold the gate
+    // open and duplicate the room audio - now it gets cut at the cap and the
+    // gate stays closed (refractory) until the signal genuinely falls, so one
+    // sustained sound = one short accent, not a stream. Turns the leak into a
+    // percussion layer that punctuates instead of duplicating.
+    uint8_t  effect_leak_max_burst; // x5 ms, 0=off, e.g. 30 = 150 ms bursts
 };
 
 struct __attribute__((packed)) Config {

@@ -336,9 +336,9 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // A SHAPED trigger is "on" if EITHER strength is nonzero: ramp A=0->B is
         // "free at rest, building resistance", not disabled; detent A=0 is a pure
         // bump. Only Constant (shape 0) keeps the strength==0 = off convention.
-        const uint8_t at_eff_r2 = (cfg.at_shape == 0) ? cfg.at_strength
+        const uint8_t at_eff_r2 = (cfg.at_shape == 0 || cfg.at_shape == 3) ? cfg.at_strength
             : ((cfg.at_strength > cfg.at_strength_b) ? cfg.at_strength : cfg.at_strength_b);
-        const uint8_t at_eff_l2 = (cfg.at_l2_shape == 0) ? cfg.at_l2_strength
+        const uint8_t at_eff_l2 = (cfg.at_l2_shape == 0 || cfg.at_l2_shape == 3) ? cfg.at_l2_strength
             : ((cfg.at_l2_strength > cfg.at_l2_strength_b) ? cfg.at_l2_strength : cfg.at_l2_strength_b);
         const bool at_wants_r2 = at_engage(cfg.at_mode > 3 ? 0 : cfg.at_mode, g_l2_pos, g_l1_btn, cfg.at_threshold, at_eff_r2, at_engaged);
         const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 3 ? 0 : cfg.at_l2_mode, g_r2_pos, g_r1_btn, cfg.at_l2_threshold, at_eff_l2, at_engaged_l2);
@@ -417,6 +417,27 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
                     pack_zones(ffb, vz, kick_amp3);
                     ffb[9] = kick_freq;               // low = heavier knock
                 }
+            } else if (shape == 3) {
+                // Weapon break (0x25): a rigid wall from the start position to the
+                // break point, then a hardware-sharp SNAP-THROUGH release - the
+                // classic semi-auto shot break (tension -> clean give -> free).
+                // Distinct from the two-stage detent (a bump with force on both
+                // sides): here the resistance ENDS at the break. Field reuse:
+                // start position = wall start (hw range 2-7), Detent zone = break
+                // point (> start, hw range 3-8), Strength A = wall force.
+                // Pairs naturally with the Activation dead zone set at the break
+                // zone: the shot then registers exactly at the snap.
+                ffb[0] = 0x25;
+                uint8_t ws = (start_pos > 9) ? 2 : start_pos;
+                if (ws < 2) ws = 2; if (ws > 7) ws = 7;
+                uint8_t we = detent_pos;
+                if (we <= ws) we = (uint8_t)(ws + 1);
+                if (we > 8) we = 8;
+                const uint16_t zpair = (uint16_t)((1u << ws) | (1u << we));
+                ffb[1] = (uint8_t)(zpair & 0xFF);
+                ffb[2] = (uint8_t)((zpair >> 8) & 0xFF);
+                uint8_t w = (uint8_t)(((uint16_t)strength * 7u + 50u) / 100u);
+                ffb[3] = (w > 7) ? 7 : w;
             } else {
                 // Resistance with per-zone SHAPES. The 0x21 Feedback effect gives
                 // each of the 10 travel zones its own 3-bit strength, evaluated

@@ -307,8 +307,12 @@ void __not_in_flash_func(audio_loop)() {
     // which is exactly the "missing and poppy" artifact: hits get chopped short
     // (missing) and each re-open clicks (poppy).
     const uint32_t hold_samples = (uint32_t)get_config().effect_leak_hold * 240u; // x5 ms @48kHz
+    // Max burst (v1.12.0): cap one gate opening at N ms. 0 = unlimited (classic).
+    const uint32_t burst_samples = (uint32_t)get_config().effect_leak_max_burst * 240u; // x5 ms @48kHz
     static bool     gate_open = false;
+    static bool     refractory = false; // closed by the cap; no re-open until the signal truly falls
     static uint32_t hold_left = 0;
+    static uint32_t burst_left = 0;
     static float env_fast = 0.0f, env_slow = 0.0f;  // fast/slow level envelopes
     static float leak_gain = 0.0f;                   // smoothed open/close gain
     const float hp_fc = (float)get_config().effect_leak_hp_hz;
@@ -356,14 +360,27 @@ void __not_in_flash_func(audio_loop)() {
             // only when the level drops well below the open threshold (0.65x). The
             // gate makes one clean open/close per hit instead of chattering.
             if (!gate_open) {
-                if (env_fast > env_slow * TRANS_RATIO + 0.0008f) {
+                if (refractory) {
+                    // Burst-capped close: re-arming waits until the signal has
+                    // GENUINELY fallen (same release test as a normal close) -
+                    // otherwise a sustained sound would re-trigger every N ms and
+                    // machine-gun chirps instead of leaking once.
+                    if (env_fast <= env_slow * (TRANS_RATIO * 0.65f) + 0.0006f)
+                        refractory = false;
+                } else if (env_fast > env_slow * TRANS_RATIO + 0.0008f) {
                     gate_open = true;
                     hold_left = hold_samples;
+                    burst_left = burst_samples; // 0 = unlimited
                 }
             } else {
-                if (hold_left > 0) hold_left--;
-                else if (env_fast <= env_slow * (TRANS_RATIO * 0.65f) + 0.0006f)
-                    gate_open = false;
+                if (burst_samples && burst_left && --burst_left == 0) {
+                    gate_open = false;      // cap reached: force the close
+                    refractory = true;      // one sustained sound = one burst
+                } else {
+                    if (hold_left > 0) hold_left--;
+                    else if (env_fast <= env_slow * (TRANS_RATIO * 0.65f) + 0.0006f)
+                        gate_open = false;
+                }
             }
             const float target = gate_open ? 1.0f : 0.0f;
             leak_gain += ((target > leak_gain) ? GATE_OPEN : GATE_CLOSE) * (target - leak_gain);
