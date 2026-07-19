@@ -177,20 +177,75 @@ function Resolve-Browser {
     return $BrowserExe  # last resort: ShellExecute App Paths lookup
 }
 
-function Minimize-ProfileWindow([int]$timeoutMs = 6000) {
-    # All profile pages carry the title "DS5 Bridge Config"; wait for that
-    # window to appear, then minimize it. The page keeps full speed while
-    # minimized (its HID waits run in a Web Worker, exempt from background
-    # timer throttling) and closes its own window once the profile is saved.
-    try {
-        if (-not ("DS5.Win32" -as [type])) {
-            Add-Type -Namespace DS5 -Name Win32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);' -ErrorAction Stop
+function Ensure-DS5WinType {
+    if ("DS5.Win" -as [type]) { return }
+    Add-Type -ErrorAction Stop -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace DS5 {
+  public static class Win {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    public static List<IntPtr> FindByTitle(string frag) {
+      var found = new List<IntPtr>();
+      EnumWindows((h, l) => {
+        if (!IsWindowVisible(h)) return true;
+        var sb = new StringBuilder(512);
+        GetWindowText(h, sb, 512);
+        if (sb.ToString().IndexOf(frag, StringComparison.OrdinalIgnoreCase) >= 0) found.Add(h);
+        return true;
+      }, IntPtr.Zero);
+      return found;
+    }
+  }
+}
+"@
+}
+
+function Get-DS5Windows([string]$titleFrag) {
+    try { Ensure-DS5WinType } catch { Log "WARN user32 helper unavailable: $($_.Exception.Message)"; return @() }
+    @([DS5.Win]::FindByTitle($titleFrag))
+}
+
+function Close-StaleProfileWindows {
+    # Sweep leftover automation pages BEFORE opening a new one. Targets ONLY
+    # titles the automation owns - stuck pages ("CONNECT NEEDED ..."), slot
+    # activator pages ("DS5 Bridge Config - Slot"), and finished-but-unclosable
+    # ones ("DS5 slot done") - so a portal tab in the user's own browser is
+    # never touched. Prevents overlapping slot pages (exit-restore page still
+    # alive when the next launch's page opens) from clobbering each other's
+    # replies in the dongle's single reply buffer: that ping-pong left pages
+    # piled up, and the LAST re-sent activation won the config - which could
+    # re-activate the previous profile over the new one.
+    $n = 0
+    foreach ($frag in @("CONNECT NEEDED", "DS5 Bridge Config - Slot", "DS5 slot done")) {
+        foreach ($h in (Get-DS5Windows $frag)) {
+            [DS5.Win]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null # WM_CLOSE
+            $n++
         }
-    } catch { Log "WARN cannot load user32 for minimize: $($_.Exception.Message)"; return }
+    }
+    if ($n) { Log "closed $n stale profile window(s)"; Start-Sleep -Milliseconds 300 }
+}
+
+function Minimize-ProfileWindow([int]$timeoutMs = 6000) {
+    # All profile pages carry the title "DS5 Bridge Config"; wait for such a
+    # window, then minimize. Enumerates ALL top-level windows - Get-Process
+    # exposes only ONE MainWindow per Edge process, which missed windows when
+    # several existed. Pages keep full speed minimized (worker-based timers).
     $deadline = (Get-Date).AddMilliseconds($timeoutMs)
     while ((Get-Date) -lt $deadline) {
-        $w = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -like "*DS5 Bridge Config*" } | Select-Object -First 1
-        if ($w) { [DS5.Win32]::ShowWindowAsync($w.MainWindowHandle, 6) | Out-Null; Log "minimized profile window (PID $($w.Id))"; return } # 6 = SW_MINIMIZE
+        $ws = Get-DS5Windows "DS5 Bridge Config"
+        if ($ws.Count) {
+            foreach ($h in $ws) { [DS5.Win]::ShowWindowAsync($h, 6) | Out-Null } # 6 = SW_MINIMIZE
+            Log "minimized $($ws.Count) profile window(s)"
+            return
+        }
         Start-Sleep -Milliseconds 200
     }
     Log "note: profile window not seen to minimize (may have already self-closed)"
@@ -199,6 +254,7 @@ function Minimize-ProfileWindow([int]$timeoutMs = 6000) {
 function Apply-Profile($htmlPath, $query = "") {
     if (-not (Test-Path -LiteralPath $htmlPath)) { Log "WARN profile not found: $htmlPath"; return }
     try {
+        Close-StaleProfileWindows
         # Open the html FILE directly (file:// origin). That is the origin your
         # browser's existing WebHID grant is stored against, and the launch
         # method that has always worked. $UseLocalServer = $true switches to
@@ -472,6 +528,85 @@ foreach ($p in (Get-DS5AudioProcs)) {
 }
 Log "stopped $n audio capture process(es)"
 
+function Ensure-DS5WinType {
+    if ("DS5.Win" -as [type]) { return }
+    Add-Type -ErrorAction Stop -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace DS5 {
+  public static class Win {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    public static List<IntPtr> FindByTitle(string frag) {
+      var found = new List<IntPtr>();
+      EnumWindows((h, l) => {
+        if (!IsWindowVisible(h)) return true;
+        var sb = new StringBuilder(512);
+        GetWindowText(h, sb, 512);
+        if (sb.ToString().IndexOf(frag, StringComparison.OrdinalIgnoreCase) >= 0) found.Add(h);
+        return true;
+      }, IntPtr.Zero);
+      return found;
+    }
+  }
+}
+"@
+}
+
+function Get-DS5Windows([string]$titleFrag) {
+    try { Ensure-DS5WinType } catch { Log "WARN user32 helper unavailable: $($_.Exception.Message)"; return @() }
+    @([DS5.Win]::FindByTitle($titleFrag))
+}
+
+function Close-StaleProfileWindows {
+    # Sweep leftover automation pages BEFORE opening a new one. Targets ONLY
+    # titles the automation owns - stuck pages ("CONNECT NEEDED ..."), slot
+    # activator pages ("DS5 Bridge Config - Slot"), and finished-but-unclosable
+    # ones ("DS5 slot done") - so a portal tab in the user's own browser is
+    # never touched. Prevents overlapping slot pages (exit-restore page still
+    # alive when the next launch's page opens) from clobbering each other's
+    # replies in the dongle's single reply buffer: that ping-pong left pages
+    # piled up, and the LAST re-sent activation won the config - which could
+    # re-activate the previous profile over the new one.
+    $n = 0
+    foreach ($frag in @("CONNECT NEEDED", "DS5 Bridge Config - Slot", "DS5 slot done")) {
+        foreach ($h in (Get-DS5Windows $frag)) {
+            [DS5.Win]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null # WM_CLOSE
+            $n++
+        }
+    }
+    if ($n) { Log "closed $n stale profile window(s)"; Start-Sleep -Milliseconds 300 }
+}
+
+function Minimize-ProfileWindow([int]$timeoutMs = 6000) {
+    # All profile pages carry the title "DS5 Bridge Config"; wait for such a
+    # window, then minimize. Enumerates ALL top-level windows - Get-Process
+    # exposes only ONE MainWindow per Edge process, which missed windows when
+    # several existed. Pages keep full speed minimized (worker-based timers).
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        $ws = Get-DS5Windows "DS5 Bridge Config"
+        if ($ws.Count) {
+            foreach ($h in $ws) { [DS5.Win]::ShowWindowAsync($h, 6) | Out-Null } # 6 = SW_MINIMIZE
+            Log "minimized $($ws.Count) profile window(s)"
+            return
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    Log "note: profile window not seen to minimize (may have already self-closed)"
+}
+
+# Sweep stale automation pages on EVERY exit (native and non-native): a stuck
+# or still-running page from the launch must not survive into the next
+# launch's activation.
+Close-StaleProfileWindows
+
 if ($wasNative) {
     $restorePath = $null; $restoreQuery = ""
     if ($AudioProfile -match '^(?i)slot[\s:]*([1-9]|1[0-6])$') {
@@ -533,19 +668,6 @@ if ($wasNative) {
                 if ($g -and (Test-Path -LiteralPath $g)) { return $g }
             }
             return $BrowserExe
-        }
-        function Minimize-ProfileWindow([int]$timeoutMs = 6000) {
-            try {
-                if (-not ("DS5.Win32" -as [type])) {
-                    Add-Type -Namespace DS5 -Name Win32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);' -ErrorAction Stop
-                }
-            } catch { return }
-            $deadline = (Get-Date).AddMilliseconds($timeoutMs)
-            while ((Get-Date) -lt $deadline) {
-                $w = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -like "*DS5 Bridge Config*" } | Select-Object -First 1
-                if ($w) { [DS5.Win32]::ShowWindowAsync($w.MainWindowHandle, 6) | Out-Null; Log "minimized profile window (PID $($w.Id))"; return } # 6 = SW_MINIMIZE
-                Start-Sleep -Milliseconds 200
-            }
         }
         try {
             $target = $restorePath
@@ -640,27 +762,44 @@ button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:10px 16p
 </head><body><div id="b">Activating profile slot&hellip;</div><div id="a"></div>
 <script>
 const SONY_VID=0x054C, DS5_PID=0x0CE6, DSE_PID=0x0DF2, SET_REPORT=0x80, GET_REPORT=0x81;
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// Slot activation replies come back on report 0x84, not 0x81: the config portal
+// (a separate browser process) polls 0x81 every second and would otherwise
+// consume this reply before we read it. 0x84 is descriptor-declared as a FULL 63-byte report (0x82 is only 9 bytes!) and native-
+// unused, so that poll can never collide with slot activation.
+const SLOT_REPORT=0x84;
+// Worker-based sleep. The automation minimizes this window ~300ms after it
+// opens, and Chromium throttles main-thread timers on hidden pages to >=1/sec
+// - plain setTimeout stretched this page's ~2s lifetime to 30-60s (which was
+// then misread as "window.close() refused"). Workers are exempt, so timing
+// stays real even minimized.
+const _w=(()=>{try{return new Worker(URL.createObjectURL(new Blob(['onmessage=e=>setTimeout(()=>postMessage(e.data),e.data.ms)'],{type:'text/javascript'})));}catch(_){return null;}})();
+let _q=0;const _m=new Map();if(_w)_w.onmessage=e=>{const f=_m.get(e.data.id);if(f){_m.delete(e.data.id);f();}};
+const sleep=ms=>_w?new Promise(r=>{const id=++_q;_m.set(id,r);_w.postMessage({id,ms});}):new Promise(r=>setTimeout(r,ms));
+// IMPORTANT - DO NOT add visibilitychange/blur handlers that close the HID
+// device: minimize fires them ~300ms in, killing the device MID-ACTIVATION -
+// the reply poll then spins on a dead handle, the retry throws, the page
+// sticks open on CONNECT NEEDED, and whether the slot actually applied is
+// luck. That was the pile-up/"native not loading" bug. The device is released
+// only in finish() (confirmed success) and by the browser itself on unload.
 function isWakeKeyboardIface(d){const c=(d&&d.collections)||[];return c.length>0&&c.every(x=>x.usagePage===0x01&&x.usage===0x06);}
 function pickDs5(l){const m=(l||[]).filter(x=>x&&x.vendorId===SONY_VID&&(x.productId===DS5_PID||x.productId===DSE_PID));return m.find(x=>!isWakeKeyboardIface(x))||m[0]||null;}
 let device=null;
 async function releaseDevice(){try{if(device&&device.opened)await device.close();}catch(_){}}
-// Close the automation tab. A page the browser considers non-script-opened will
-// REFUSE window.close() silently - which used to leave the window open AND still
-// holding the HID device, breaking the next activation. So: always release the
-// device first (frees it for the next page even if the window lingers), try to
-// close, and if we're still alive a beat later, neutralize the page - drop the
-// body and flag the title so it can't claim the device and is visibly finished.
-async function finish(){await releaseDevice();
+async function finish(){
+  await releaseDevice();               // free our handle first, window fate aside
   try{window.close();}catch(_){}
-  setTimeout(()=>{try{window.close();}catch(_){}
-    try{document.title='DS5 slot done - closable';document.body.innerHTML=
-      '<div id=\'b\' style=\'background:#14532d\'>Slot activated \u2713 - you can close this tab.</div>';
-    }catch(_){}}, 500);
+  await sleep(600);                    // worker-timed: fires on time even minimized
+  try{window.close();}catch(_){}
+  await sleep(600);
+  // Still alive: neutralize so the page holds nothing and is visibly done
+  // (the start/stop scripts also sweep leftover slot windows before each run).
+  try{document.title='DS5 slot done - closable';document.body.innerHTML=
+    '<div id=\'b\' style=\'background:#14532d;padding:14px 16px;border-radius:10px\'>Slot activated \u2713 - you can close this tab.</div>';
+  }catch(_){}
 }
 async function sendCmd(id,args=[]){const p=new Uint8Array(63);p[0]=0x66;p[1]=id;args.forEach((b,i)=>p[2+i]=b);await device.sendFeatureReport(SET_REPORT,p);}
 async function reply(id,idx,tries=30){for(let t=0;t<tries;t++){await sleep(60);let r=null;
-  try{const d=await device.receiveFeatureReport(GET_REPORT);r=new Uint8Array(d.buffer,d.byteOffset,d.byteLength);}catch(_){continue;} // mid-flash USB stall
+  try{const d=await device.receiveFeatureReport(SLOT_REPORT);r=new Uint8Array(d.buffer,d.byteOffset,d.byteLength);}catch(_){continue;} // slot reply on 0x84; mid-flash USB stall
   for(let k=0;k<Math.min(4,r.length);k++){if(r[k]===0x66&&r[k+1]===id){const x=r.slice(k);
     if(x[2]===0xFE)break;                 // pending marker: keep polling
     if(idx!==undefined&&x[3]!==idx)break; // stale reply for another slot
@@ -676,34 +815,21 @@ async function run(gesture){
     if(!device&&gesture){const p=await navigator.hid.requestDevice({filters:[{vendorId:SONY_VID,productId:DS5_PID},{vendorId:SONY_VID,productId:DSE_PID}]});device=pickDs5(p)||(p&&p[0]);}
     if(!device){fail('No granted device - click to connect and activate slot '+slot+'.');return;}
     if(!device.opened)await device.open();
-    let r=null,sentOk=false;
-    // Up to 4 attempts with growing delays. Activation is idempotent, and replies
-    // can be lost transiently: flash-write USB stalls, another open page on the
-    // same device (config portal tab) consuming feature reports, or a mid-apply
-    // reconnect. The activation itself virtually always succeeds even when the
-    // confirmation races - so a missing REPLY is never treated as failure. Only
-    // an explicit firmware error reply, or failing to SEND at all, is a failure.
-    for(let a=0;a<4&&!(r&&r[2]===0x00);a++){
-      if(a)await sleep(600+a*500);
-      if(a===2){try{await device.close();await sleep(250);await device.open();}catch(_){ }} // fresh handle mid-way
-      try{await sendCmd(0x09,[slot-1]);sentOk=true;}catch(_){continue;}
+    let r=null;
+    for(let a=0;a<2&&!(r&&(r[2]===0x00||r[2]===0x02));a++){ // one silent retry (flash settle)
+      if(a)await sleep(800);
+      await sendCmd(0x09,[slot-1]);
       r=await reply(0x09,slot-1);
     }
-    if(r&&r[2]!==0x00){fail('Slot '+slot+' activation failed: empty slot, or firmware older than 1.1.2.');return;}
-    if(!r){
-      if(!sentOk){fail('Could not reach the controller to activate slot '+slot+' - click to connect and retry.');return;}
-      // Sent but unconfirmed: another page (usually the portal tab) is holding the
-      // reply channel. The activation almost certainly applied - do not block.
-      b.style.background='#3f3f1d';
-      b.textContent='Slot '+slot+' activation sent (unconfirmed - close the portal tab if this repeats).';
-      setTimeout(finish,2500);
-      return;
-    }
-    if(r[4]===1){b.textContent='Slot '+slot+' active - device re-enumerating...';try{await sendCmd(0x03);}catch(_){ }}
+    // status 0x00 = activated+persisted; 0x02 = ACTIVATED but flash persist
+    // deferred (core busy at launch) - settings are live, treat as success.
+    if(!r||(r[2]!==0x00&&r[2]!==0x02)){
+      const st=r?('status 0x'+r[2].toString(16)+', stage '+r[5]):'no reply (timeout)';
+      fail('Slot '+slot+' activation failed ('+st+'). Stages: 1=bad slot, 2=slot unreadable/empty, 3=persist.');return;}
+    if(r[4]===1){b.textContent='Slot '+slot+' active - device re-enumerating...';try{await sendCmd(0x03);}catch(_){}}
     b.style.background='#14532d';b.textContent='Profile slot '+slot+' activated \u2713';
     document.title='DS5 Bridge Config';
-    await releaseDevice();               // free the device NOW for the next activation
-    setTimeout(finish,900);              // automation tab: self-close (with fallback)
+    await finish();
   }catch(e){fail('Error: '+e.message);}
 }
 run(false);

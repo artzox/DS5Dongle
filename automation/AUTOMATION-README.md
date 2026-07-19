@@ -1,6 +1,6 @@
 # DS5Dongle audio + Playnite automation
 
-**Version 1.1.1**
+**Version 1.13.3**
 
 Zero-config auto-haptics for your DualSense via the DS5Dongle, with Playnite
 integration that automatically switches between native-haptics games and
