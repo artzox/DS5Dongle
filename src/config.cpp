@@ -424,12 +424,13 @@ bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len) {
     return slot_read(idx, nm, bd);
 }
 
-bool slot_activate(uint8_t idx, bool &needs_reenum) {
+uint8_t slot_activate(uint8_t idx, bool &needs_reenum, uint8_t &fail_stage) {
     needs_reenum = false;
-    if (idx >= SLOT_COUNT) return false;
+    fail_stage = 0;
+    if (idx >= SLOT_COUNT) { fail_stage = 1; return 0; }
     uint8_t nm[SLOT_NAME_LEN];
     static Config_body slot_body; // static: off the USB task stack
-    if (!slot_read(idx, nm, slot_body)) return false;
+    if (!slot_read(idx, nm, slot_body)) { fail_stage = 2; return 0; }
     // Fields that change USB descriptors / enumeration-time behavior; if any
     // differ, the caller should issue the reconnect command (0x03) afterwards.
     const Config_body &o = config.body;
@@ -444,7 +445,26 @@ bool slot_activate(uint8_t idx, bool &needs_reenum) {
                    (o.ps_shortcut_enabled  != n.ps_shortcut_enabled);
     config.body = slot_body;
     config_valid(); // clamp anything out of range (e.g. slot saved by older fw)
-    return config_save();
+    // Persist. flash_safe_execute parks core1 with a 1 s timeout; at game
+    // launch core1 is at its busiest (BT stream + haptics), which is exactly
+    // when a lockout timeout can trip - and never during calm portal tests.
+    // Retry once; if persistence still fails, the activation itself has
+    // ALREADY happened (config.body is live) - report 2 so callers can treat
+    // a launch-time activation as successful instead of "slot failed".
+    if (config_save()) return 1;
+    sleep_ms(60);
+    if (config_save()) return 1;
+    fail_stage = 3;
+    return 2;
+}
+
+// Public: load a slot's full config body (for backup/export). Returns false if
+// the slot is empty or unreadable. The body is validated the same way a live
+// load is, so an exported profile is always a coherent config.
+bool slot_load_body(uint8_t idx, Config_body &out) {
+    if (idx >= SLOT_COUNT) return false;
+    uint8_t nm[SLOT_NAME_LEN]{};
+    return slot_read(idx, nm, out);
 }
 
 bool slot_info(uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], uint8_t &valid, uint8_t &cfg_version) {

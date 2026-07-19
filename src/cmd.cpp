@@ -35,8 +35,8 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
-constexpr uint8_t FW_VER_MINOR = 12;
-constexpr uint8_t FW_VER_PATCH = 0;
+constexpr uint8_t FW_VER_MINOR = 13;
+constexpr uint8_t FW_VER_PATCH = 3;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
@@ -46,6 +46,10 @@ static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
     memcpy(buffer, &value, sizeof(T));
     return true;
 }
+
+// Read a single config field from a specific body (definition below); used by the
+// slot-backup command before its own definition appears in this file.
+static bool get_config_field_from(const Config_body &config, uint8_t field_id, uint8_t *buffer, uint16_t bufsize);
 
 static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t const *buffer, uint16_t bufsize) {
 
@@ -225,9 +229,7 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
     return true;
 }
 
-static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize) {
-    const Config_body &config = get_config();
-
+static bool get_config_field_from(const Config_body &config, uint8_t field_id, uint8_t *buffer, uint16_t bufsize) {
     switch (field_id) {
         case 0x00:
             return write_config_value(buffer, bufsize, config.config_version);
@@ -341,6 +343,10 @@ static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize
     }
 }
 
+static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize) {
+    return get_config_field_from(get_config(), field_id, buffer, bufsize);
+}
+
 void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
     // 0x01 update config field in variable: field_id + typed value
     // 0x02 write config to flash
@@ -450,7 +456,7 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             printf("[CMD] save profile slot\n");
             { uint8_t pend[63]{}; pend[0]=0x66; pend[1]=0x08; pend[2]=0xFE;
               if (bufsize >= 1) pend[3] = buffer[0];
-              feature_data[0x81].assign(pend, pend + sizeof(pend)); }
+              feature_data[0x84].assign(pend, pend + sizeof(pend)); }
             uint8_t buf[63]{};
             buf[0] = 0x66; buf[1] = 0x08; buf[2] = 0x01; // default: fail
             if (bufsize >= 1 && buffer[0] < SLOT_COUNT) {
@@ -459,7 +465,7 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
                 if (slot_save(idx, buffer + 1, nlen)) buf[2] = 0x00;
                 buf[3] = idx;
             }
-            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
             break;
         }
         case 0x09: {
@@ -468,20 +474,30 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             // needs_reenum=1 means the caller should send cmd 0x03 (USB reconnect)
             // for descriptor-level settings to take effect.
             printf("[CMD] activate profile slot\n");
+            // Slot replies live on report 0x84, NOT 0x81: the config portal (a
+            // SEPARATE browser process from the slot-activate page) polls 0x81
+            // every second for diagnostics, and each poll consumes the shared
+            // 0x81 buffer - clobbering a slot reply before the slot page reads it
+            // ("no reply (timeout)" though the activation applied). 0x84 is
+            // declared in the HID descriptor (both DS and DSE) and is untouched
+            // by DS-native and PS-app profile passthrough, so the portal poll can
+            // never collide with it. (0x82 was WRONG: its descriptor size is 9 bytes -> USB buffer overflow on read.)
             { uint8_t pend[63]{}; pend[0]=0x66; pend[1]=0x09; pend[2]=0xFE;
               if (bufsize >= 1) pend[3] = buffer[0];
-              feature_data[0x81].assign(pend, pend + sizeof(pend)); }
+              feature_data[0x84].assign(pend, pend + sizeof(pend)); }
             uint8_t buf[63]{};
             buf[0] = 0x66; buf[1] = 0x09; buf[2] = 0x01;
             if (bufsize >= 1 && buffer[0] < SLOT_COUNT) {
                 bool reenum = false;
-                if (slot_activate(buffer[0], reenum)) {
-                    buf[2] = 0x00;
-                    buf[4] = reenum ? 0x01 : 0x00;
-                }
+                uint8_t stage = 0;
+                const uint8_t res = slot_activate(buffer[0], reenum, stage);
+                if (res == 1)      buf[2] = 0x00; // activated + persisted
+                else if (res == 2) buf[2] = 0x02; // ACTIVATED, persist deferred
+                buf[4] = reenum ? 0x01 : 0x00;
+                buf[5] = stage; // 0 none, 1 bad idx, 2 slot unreadable, 3 persist failed
                 buf[3] = buffer[0];
             }
-            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            feature_data[0x84].assign(buf, buf + sizeof(buf)); // 0x82: collision-free (see above)
             break;
         }
         case 0x0a: {
@@ -490,7 +506,7 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             printf("[CMD] read profile slot info\n");
             { uint8_t pend[63]{}; pend[0]=0x66; pend[1]=0x0a; pend[2]=0xFE;
               if (bufsize >= 1) pend[3] = buffer[0];
-              feature_data[0x81].assign(pend, pend + sizeof(pend)); }
+              feature_data[0x84].assign(pend, pend + sizeof(pend)); }
             uint8_t buf[63]{};
             buf[0] = 0x66; buf[1] = 0x0a; buf[2] = 0x01;
             if (bufsize >= 1 && buffer[0] < SLOT_COUNT) {
@@ -504,7 +520,31 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
                 }
                 buf[3] = buffer[0];
             }
-            feature_data[0x81].assign(buf, buf + sizeof(buf));
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
+            break;
+        }
+
+        case 0x0d: {
+            // READ one field FROM A SLOT (for backup/export). Payload: [slot, fid].
+            // Loads the slot body to a scratch config and returns that field via the
+            // same getter the live editor uses, so an export reads exactly what a
+            // live read would. Reply: 0x66 0x0d status slot fid <value bytes>.
+            // status: 0x00 ok, 0x01 empty/unreadable slot, 0x02 bad field.
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x0d; buf[2] = 0x01;
+            if (bufsize >= 2 && buffer[0] < SLOT_COUNT) {
+                buf[3] = buffer[0]; buf[4] = buffer[1];
+                Config_body sb{};
+                if (slot_load_body(buffer[0], sb)) {
+                    uint8_t val[8]{};
+                    if (get_config_field_from(sb, buffer[1], val, sizeof(val))) {
+                        buf[2] = 0x00;
+                        memcpy(buf + 5, val, sizeof(val));
+                    } else {
+                        buf[2] = 0x02; // unknown field id
+                    }
+                }
+            }
+            feature_data[0x84].assign(buf, buf + sizeof(buf)); // 0x84: portal 0x81 poll can't clobber backup reads
             break;
         }
 

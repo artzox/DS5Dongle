@@ -164,8 +164,14 @@ constexpr uint8_t SLOT_COUNT = 16;       // v1.9.0: 16 (was 8) - 8 per flash sec
 constexpr uint8_t SLOTS_PER_SECTOR = 8;  // 512-byte stride in a 4 KB sector
 constexpr uint8_t SLOT_NAME_LEN = 16;
 bool slot_save(uint8_t idx, const uint8_t *name, uint8_t name_len); // current config.body -> slot
-bool slot_activate(uint8_t idx, bool &needs_reenum);                // slot -> active config + flash
+// slot -> active config + flash. Returns 0 = failed (out param stage: 1 bad
+// idx, 2 slot unreadable, 3 flash persist failed even after retry), 1 = fully
+// activated + persisted, 2 = ACTIVATED (settings live in RAM) but persistence
+// failed - treat as success at game launch; the config only reverts on power
+// loss and any later save re-persists it.
+uint8_t slot_activate(uint8_t idx, bool &needs_reenum, uint8_t &fail_stage);
 bool slot_info(uint8_t idx, uint8_t name_out[SLOT_NAME_LEN], uint8_t &valid, uint8_t &cfg_version);
+bool slot_load_body(uint8_t idx, Config_body &out);
 Config_body& get_config();
 void set_config(const uint8_t *new_config, const uint16_t len);
 void config_valid();

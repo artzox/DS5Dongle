@@ -255,14 +255,27 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
 
     std::vector<uint8_t> feature_data = get_feature_data(report_id, reqlen);
     if (!feature_data.empty()) {
-        if (report_id == 0x81 && feature_data[0] == 0x66) {
-            memcpy(buffer, feature_data.data(), feature_data.size());
-            return feature_data.size();
+        // 0x81 (portal command replies) and 0x82 (slot-command replies, split off
+        // to dodge the portal's 0x81 diagnostic poll) both carry a full 0x66-framed
+        // reply that must be returned VERBATIM. Every other report id is a native
+        // report whose stored leading byte is the report id and gets stripped.
+        // CLAMP to reqlen in every path: TinyUSB sizes the transfer buffer from
+        // the DESCRIPTOR-declared report size. Copying more than reqlen is a
+        // buffer overflow in the USB stack (this is exactly how routing 63-byte
+        // slot replies through 0x82 - declared as a 9-byte report - corrupted
+        // reads and threw errors in WebHID). Slot replies live on 0x84, whose
+        // declared size is the full 63 bytes.
+        if ((report_id == 0x81 || report_id == 0x84) && feature_data[0] == 0x66) {
+            const uint16_t n = (uint16_t)((feature_data.size() < reqlen) ? feature_data.size() : reqlen);
+            memcpy(buffer, feature_data.data(), n);
+            return n;
         }
-        memcpy(buffer, feature_data.data() + 1, feature_data.size() - 1);
+        const uint16_t n = (uint16_t)(((feature_data.size() - 1) < reqlen) ? (feature_data.size() - 1) : reqlen);
+        memcpy(buffer, feature_data.data() + 1, n);
+        return n;
     }
 
-    return feature_data.empty() ? 0 : feature_data.size() - 1;
+    return 0;
 }
 
 bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_request) {
