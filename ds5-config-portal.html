@@ -82,6 +82,11 @@ function sleep(ms){
 }
 
 const SET_REPORT = 0x80, GET_REPORT = 0x81;
+// Slot-command replies (activate 0x09, slot field-read 0x0d) come back on report
+// 0x84, split off from 0x81 so this portal's own 1-second diagnostic poll on
+// 0x81 can't clobber a slot-activate page's reply in another process, nor a
+// backup read here. Reads for slot replies use SLOT_REPORT (0x84).
+const SLOT_REPORT = 0x84; // full 63-byte feature report (0x82 is only 9 bytes in the descriptor!)
 
 // Field definitions: [field_id, key, type('u8'|'u16'|'f32'), label, kind, opts]
 // Fields grouped into sections. Each field: [id, key, type, label, kind, opts]
@@ -275,18 +280,21 @@ function hidLocked(fn){
 }
 
 // --- Profile slots (fw >= 1.1.2): cmd 0x08 save, 0x09 activate, 0x0a info ---
-async function readCmdReply(cmdId, expectIdx, tries=30){
-  // Robust against three real-world hazards: (1) STALE replies - the 0x81
+async function readCmdReplyOn(reportId, cmdId, expectIdx, tries=30){
+  // Robust against three real-world hazards: (1) STALE replies - the reply
   // buffer holds the LAST reply, so we require both the command id AND the
   // echoed slot index to match, and treat firmware's PENDING marker (status
   // 0xFE) as "keep waiting"; (2) USB stalls - slot save/activate performs a
   // flash sector erase with interrupts off, so reads can throw briefly;
   // (3) slow flash - the window is ~1.8s, not a few hundred ms.
+  // reportId selects the buffer: 0x81 for portal commands, 0x82 for slot
+  // commands (activate / slot field-read) which are split off so this portal's
+  // own 0x81 diagnostic poll can't clobber them.
   for (let t = 0; t < tries; t++){
     await sleep(60);
     let raw = null;
     try {
-      const data = await device.receiveFeatureReport(GET_REPORT);
+      const data = await device.receiveFeatureReport(reportId);
       raw = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     } catch(_) { continue; } // mid-flash stall; retry
     for (let k = 0; k < Math.min(4, raw.length); k++){
@@ -299,6 +307,15 @@ async function readCmdReply(cmdId, expectIdx, tries=30){
     }
   }
   return null;
+}
+// Backward-compatible wrapper: portal commands reply on 0x81.
+async function readCmdReply(cmdId, expectIdx, tries=30){
+  // True slot commands (save 0x08, activate 0x09, info 0x0a, slot-field-read
+  // 0x0d) reply on SLOT_REPORT so neither this portal's 1-second 0x81
+  // diagnostic poll nor bulk config ops can consume their replies. Bulk config
+  // get/set (0x0b/0x0c) are PORTAL commands and stay on 0x81.
+  const rid = (cmdId === 0x08 || cmdId === 0x09 || cmdId === 0x0a || cmdId === 0x0d) ? SLOT_REPORT : GET_REPORT;
+  return readCmdReplyOn(rid, cmdId, expectIdx, tries);
 }
 async function slotInfo(idx){
   await sendCmd(0x0a, [idx]);
@@ -319,7 +336,7 @@ async function slotActivate(idx){
   for (let attempt = 0; attempt < 2; attempt++){
     await sendCmd(0x09, [idx]);
     const r = await readCmdReply(0x09, idx);
-    if (r && r[2] === 0x00) return { needsReenum: r[4] === 1 };
+    if (r && (r[2] === 0x00 || r[2] === 0x02)) return { needsReenum: r[4] === 1 }; // 0x02 = activated, persist deferred
     await sleep(800);
   }
   return null;
@@ -363,7 +380,14 @@ async function _refreshSlotsOnce(){
     </div>`;
   }
   const boxNow = document.getElementById('slotbox'); // render() may have replaced the node mid-run
-  if (boxNow) boxNow.innerHTML = rows;
+  if (boxNow) boxNow.innerHTML = rows +
+    `<div style="display:flex;gap:8px;align-items:center;margin:10px 0 2px;padding-top:8px;border-top:1px solid var(--line,#333)">
+       <button class="btn btn-outline" style="padding:2px 10px" onclick="backupAllSlots()">Back up all slots</button>
+       <button class="btn btn-outline" style="padding:2px 10px" onclick="document.getElementById('restoreFile').click()">Restore from file</button>
+       <input id="restoreFile" type="file" accept="application/json,.json" style="display:none"
+              onchange="if(this.files[0]){restoreAllSlots(this.files[0]); this.value='';}">
+       <span id="backupStatus" style="flex:1;color:var(--sub);font-size:12px"></span>
+     </div>`;
   _slotHealTries = 0; // full list rendered - reset the self-heal budget
 }
 async function refreshSlots(){
@@ -536,6 +560,87 @@ async function bulkReadFields(fieldDefs){ // [[fid,key,type],...] -> {key:value}
   // every requested key must be present
   for (const f of fieldDefs) if (!(f[1] in out)) return null;
   return out;
+}
+
+// Read ONE field from a SLOT (fw >= 1.13.0, cmd 0x0d). Returns the decoded value
+// or null. Used by backup, which reads every field of every slot without
+// disturbing the active config.
+async function slotReadField(slot, fdef){ // fdef = [fid,key,type]
+  await sendCmd(0x0d, [slot, fdef[0]]);
+  const r = await readCmdReplyOn(SLOT_REPORT, 0x0d, slot, 12); // slot field-read reply is on SLOT_REPORT (0x84)
+  if (!r || r[2] !== 0x00) return null;
+  // reply: 66 0d status slot fid <value bytes...>
+  const sz = fdef[2] === 'u16' ? 2 : (fdef[2] === 'f32' ? 4 : 1);
+  return decField(fdef[2], Array.from(r.slice(5, 5 + sz)));
+}
+
+// Back up ALL slots to one JSON file: names + every field value per valid slot.
+async function backupAllSlots(){
+  const status = document.getElementById('backupStatus');
+  const setS = t => { if (status) status.textContent = t; };
+  const dump = { format: 'ds5dongle-slots', version: 1, savedAt: new Date().toISOString(), slots: [] };
+  try {
+    await hidLocked(async () => {
+      for (let i = 0; i < 16; i++){
+        setS(`Reading slot ${i+1}/16…`);
+        const info = await slotInfo(i);
+        if (!info || !info.valid){ dump.slots.push({ index: i, valid: false }); continue; }
+        const fields = {};
+        for (const f of FIELDS){
+          const v = await slotReadField(i, f);
+          if (v !== null) fields[f[1]] = v;
+        }
+        dump.slots.push({ index: i, valid: true, name: info.name, cfgVersion: info.cfgVersion, fields });
+      }
+    });
+    const validN = dump.slots.filter(s => s.valid).length;
+    const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    a.href = URL.createObjectURL(blob); a.download = `ds5dongle-slots-${stamp}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    setS(`Backed up ${validN} slot${validN===1?'':'s'} \u2713`);
+  } catch(e){ setS('Backup failed: ' + (e && e.message ? e.message : e)); }
+}
+
+// Restore ALL slots from a backup file: for each valid slot, bulk-write its
+// fields into the ACTIVE config, then save that into the slot. Empty slots in
+// the file are left untouched on the dongle (non-destructive to slots the backup
+// didn't cover). The active config is disturbed during restore, so we reload it
+// afterward.
+async function restoreAllSlots(file){
+  const status = document.getElementById('backupStatus');
+  const setS = t => { if (status) status.textContent = t; };
+  let dump;
+  try { dump = JSON.parse(await file.text()); }
+  catch { setS('Restore failed: not a valid JSON file'); return; }
+  if (!dump || dump.format !== 'ds5dongle-slots' || !Array.isArray(dump.slots)){
+    setS('Restore failed: not a DS5Dongle slot backup'); return;
+  }
+  const valid = dump.slots.filter(s => s.valid && s.fields);
+  if (!valid.length){ setS('Nothing to restore (backup has no saved slots)'); return; }
+  if (!confirm(`Restore ${valid.length} slot(s) from this file? Each listed slot on the dongle will be overwritten.`)) { setS('Restore cancelled'); return; }
+  const byKey = Object.fromEntries(FIELDS.map(f => [f[1], f]));
+  let done = 0, failed = 0;
+  try {
+    await hidLocked(async () => {
+      for (const s of valid){
+        setS(`Restoring slot ${s.index+1}…`);
+        const entries = [];
+        for (const [key, value] of Object.entries(s.fields)){
+          const f = byKey[key]; if (!f) continue;         // unknown field (newer/older backup) - skip
+          entries.push({ fid: f[0], type: f[2], value });
+        }
+        const wrote = await bulkWriteFields(entries);
+        if (!wrote){ failed++; continue; }
+        const saved = await slotSave(s.index, s.name || '');
+        if (saved) done++; else failed++;
+      }
+    });
+    await readAll(); render(); await refreshSlots();
+    setS(`Restored ${done} slot${done===1?'':'s'}${failed?`, ${failed} failed`:''} \u2713`);
+  } catch(e){ setS('Restore failed: ' + (e && e.message ? e.message : e)); }
 }
 
 async function rebootBootloader(){
@@ -823,7 +928,7 @@ setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && documen
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.12.0</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.13.2</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>

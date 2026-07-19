@@ -2,6 +2,70 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.3] — 2026-07-19
+
+### Fixed
+- **Portal errors after the 0x82 reply-channel move.** Report 0x82 is declared
+  in the HID descriptor as a **9-byte** feature report (DualSense-authentic);
+  63-byte slot replies routed through it overflowed the USB transfer buffer
+  and made portal slot reads throw. Slot-family replies (save 0x08, activate
+  0x09, info 0x0a, slot-field-read 0x0d) now live on **0x84**, which the
+  descriptor declares at the full 63 bytes — keeping the collision fix (the
+  portal's 1-second 0x81 diagnostic poll can never consume a slot reply) on a
+  correctly sized channel. The descriptor itself is untouched.
+- **Channel consistency.** 1.13.2 had migrated only activate and slot-field
+  reads; save and slot-info still replied on 0x81, and the bulk config get/set
+  commands (0x0b/0x0c — portal commands, not slot commands) had been dragged
+  along. All slot commands now reply on 0x84; everything else stays on 0x81.
+  The portal routes readers by command id accordingly.
+- **USB get-report hardening.** The report callback now clamps every copy to
+  the host-requested length, so a mis-sized report can never overflow the USB
+  stack again regardless of future channel choices.
+
+## [1.13.2] — 2026-07-19
+
+### Fixed
+- **Slot activation "no reply (timeout)" while the config portal is open — the
+  real root cause.** Every firmware command reply was posted to a single shared
+  feature-report buffer (report 0x81). The config portal polls 0x81 once a second
+  for diagnostics, and because the portal tab and the slot-activate page are
+  SEPARATE browser processes, nothing serialized them: the portal's poll would
+  consume a slot-activate reply before the slot page read it, so the page saw a
+  timeout even though the activation had applied. Slot-command replies (activate
+  0x09, slot field-read 0x0d) now use report 0x82 instead - descriptor-declared
+  in both DS and DSE identities, and untouched by DualSense-native and PS-app
+  profile passthrough - which the portal's 0x81 poll can never collide with. The
+  slot page and the portal's backup reader read 0x82 for these; all other
+  commands stay on 0x81. Builds on the prior background-tab timer fix (Web Worker
+  timing) and the persist-deferred status fix. Needs the new firmware AND the
+  regenerated slot-activate.html (re-run ds5-setup.bat).
+
+## [1.13.0] — 2026-07-17
+
+### Fixed
+- **Slot activation across a re-enumeration no longer blocks the next slot load.**
+  When an activated slot changes the USB descriptor (wake on/off, or controller
+  type), the firmware re-enumerates the device. The slot page was holding its
+  WebHID handle open ACROSS that USB drop - so the OS kept the granted permission
+  bound to the vanishing device instance, and the next page (e.g. the native
+  profile at game start) could not claim the re-enumerated controller. The page
+  now closes its handle BEFORE triggering the reconnect (then briefly reopens
+  only to deliver the reconnect command and closes again), so no handle spans the
+  re-enumeration. Also releases the device on focus loss as a backstop. This is
+  the real fix for "slot page stays open, native game controller detection
+  breaks". Re-run ds5-setup.bat to regenerate slot-activate.html. Generated-page
+  fix, no reflash.
+
+### Added
+- **Back up / restore all profile slots to a file.** The slots panel gains "Back
+  up all slots" (reads every field of all 16 slots and downloads one JSON file,
+  names included) and "Restore from file" (writes every saved slot in the file
+  back). Protects hard-won slot tuning against a flash wipe, a bad flash, or a
+  dead board, and moves profiles between dongles. Restore is non-destructive to
+  slots the backup did not cover, and unknown fields (from a newer/older backup)
+  are skipped rather than rejected. Needs new firmware: a read-slot-field command
+  (0x0d) that reads a slot's stored config without disturbing the active profile.
+
 ## [1.12.0] — 2026-07-17
 
 ### Added

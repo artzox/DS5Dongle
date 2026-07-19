@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.12.0**
+**Version 1.13.3**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -90,7 +90,7 @@ the PC is actually asleep (where wake needs it).
 
 1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.12.0.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.13.3.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -527,14 +527,14 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.12.0.uf2` — the firmware (flash this; reports version 1.12.0)
+- `ds5-v1.13.3.uf2` — the firmware (flash this; reports version 1.13.2)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
 - `src/` — the modified source files
 - `ds5dongle-v1.0.9.patch` — unified diff against awalol v0.7.0 (up to fw 1.0.9)
 - `LICENSE` — MIT license
-- `README.md` — this file (docs version 1.12.0)
+- `README.md` — this file (docs version 1.13.2)
 - `CHANGELOG.md` — version history
 - `automation/` — **optional** Playnite integration (see below)
 
