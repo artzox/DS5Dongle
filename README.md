@@ -8,6 +8,15 @@ haptics** for games without native DualSense support, full **DS4Windows
 compatibility**, **converted-rumble blending**, and a **controller-speaker effect
 leak** for added immersion — all configurable from a web-based portal.
 
+> ⚠️ **Hardware requirement — Pico 2 W only.** The released `.uf2` is built for the
+> **Raspberry Pi Pico 2 W** (RP2350). It will **not** run on the original
+> **Raspberry Pi Pico W** (RP2040) — they are different chips (Cortex-M33 vs
+> Cortex-M0+, different memory and no FPU on the RP2040), so a binary built for one
+> cannot run on the other. This firmware's floating-point audio DSP (auto-haptics,
+> the effect leak, resampling) is designed around the RP2350's FPU and larger RAM;
+> the original Pico W is not supported. Make sure your board is a **Pico 2 W**
+> before flashing.
+
 Built on **awalol/DS5Dongle v0.7.0**, which relocates the entire BT/USB/audio path
 to RAM so native fine haptics and controller audio work without overclocking.
 
@@ -88,7 +97,9 @@ the PC is actually asleep (where wake needs it).
 
 ## Quick start
 
-1. **Flash the firmware.** Hold the BOOTSEL button while plugging in the Pico 2W
+1. **Flash the firmware.** *(Pico 2 W / RP2350 only — see the hardware note above;
+   this will not run on the original Pico W.)* Hold the BOOTSEL button while
+   plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
    `ds5-v1.13.3.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
