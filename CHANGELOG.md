@@ -2,6 +2,89 @@
 
 All notable changes to this project are documented here.
 
+## [1.14.0] — 2026-07-23 (update 4)
+
+### Fixed
+- **Mechanical states no longer fall into timeline replay.** Loading a saved file
+  (or assigning timeline entries) whose states carried recorded durations put
+  wall/resistance sets into the timeline stepper - which swapped states on
+  multi-second timers regardless of trigger position: the effect "sometimes
+  worked", and the wall armed/disarmed under a resting finger (phantom clicks).
+  Mechanical states (walls, resistances) now ALWAYS replay positionally - the
+  firmware ignores durations for them, and the portal strips durations on load
+  and timeline-assign. Recorded durations still drive replay for vibration
+  states, where the rhythm is the effect. Existing loaded profiles are fixed by
+  the firmware change alone - no re-loading needed.
+
+## [1.14.0] — 2026-07-23 (update 3)
+
+### Changed
+- **The positional sequencer now accepts resistance stages** (up to 5 mechanical
+  states per action, walls AND resistances mixed). States are ordered by their
+  captured trigger positions and played in sequence along the pull — each next
+  stage armed just before the finger reaches its region. This reproduces full
+  actions like Ratchet & Clank's wall -> wall -> end-resistance, or a resistance
+  BEFORE a wall. Tick order doesn't matter; positions come from the bytes.
+- Behavior change: a mechanical pair (e.g. wall + resistance) now replays
+  POSITIONALLY instead of the rate-blend. The rate-based A<->B blend remains for
+  vibration pairs only. Monitor multi-select cap raised from 2 to 5.
+
+## [1.14.0] — 2026-07-23 (update 2)
+
+### Added
+- **Two-wall sequencer** for custom effects (Ratchet & Clank-style hold model):
+  assign TWO weapon-break states with different wall positions and, while-held,
+  the firmware plays the lower wall first, then — the moment your pull passes it —
+  force-sends the upper wall (which sits ahead of the finger at that moment, so
+  arming it should not be felt). Push through both in one pull; the sequence
+  resets to the lower wall on release. Auto-detected: 2 states, both weapon-break
+  type, different wall zones, no timeline durations.
+
+### Changed
+- **Re-arm zone is now configurable** (the threshold field, in while-held mode):
+  walls re-arm/reset when the trigger returns to or below this zone. Default 1;
+  set 0 to re-arm ONLY at full release (finger off the trigger — nothing to push
+  against, click-free, matching how the game re-arms on release). Higher values
+  re-arm earlier at the cost of possible arming feel under a hovering finger.
+
+## [1.14.0] — 2026-07-23 (update)
+
+### Added
+- **Timeline capture** for custom effects: Record captures the effect's real
+  RHYTHM — every state change with its held duration (the plain history loses
+  all timing). Replay steps the timeline verbatim (each state held for its
+  recorded ms, looping), reproducing asymmetric patterns like a switch-then-HOLD
+  exactly, with no rate dial-in. Up to 5 timestamped states per trigger; files
+  gain per-state duration_ms (format v2). Assignments from the plain history
+  (no durations) keep the rate-based A<->B cycling, whose blend stacks
+  mechanical pairs nicely.
+
+### Changed
+- **Weapon-break re-arm is now a forced fresh re-send** of the same effect
+  (no Off pulse in between): after breaking through and returning below the
+  wall's own start zone, the break re-arms without the wall-drop-then-restore
+  that caused an audible/palpable click on the next press.
+
+## [1.14.0] — 2026-07-22
+
+### Added
+- **Custom Captured Effects** — capture a real adaptive-trigger effect from a game
+  and replay it on any trigger, with no fidelity loss. A new Trigger Effect Monitor
+  panel shows the genuine trigger effects a game sends (resistance, weapon-break,
+  vibration). A game action is usually TWO states that alternate rapidly (e.g. a
+  weapon's resistance and its break point, or a vibration's A/B pump) — tick both
+  in the monitor and Assign them as a custom effect on that trigger. The firmware
+  stores the raw 11-byte states VERBATIM (the game's force curves don't round-trip
+  through slider values, so raw storage preserves the exact feel) and, while the
+  trigger is engaged, cycles A<->B like the game does. Per trigger, independent:
+  enable, trigger condition (while-held / on-press / on-release), threshold zone
+  (dead-zone compatible), and A<->B toggle rate (for vibration actions). Effects
+  can be saved to and loaded from JSON files for sharing. Custom effects save to
+  on-device profile slots with the rest of the config.
+  - Only GENUINE game-sent trigger effects can be captured — firmware-converted
+    rumble (e.g. Control's rumble->trigger) and DS4Windows/Xbox rumble are NOT
+    capturable, as those aren't trigger effects the game sent.
+
 ## [1.13.3] — 2026-07-19
 
 ### Fixed

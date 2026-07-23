@@ -1,12 +1,14 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.13.3**
+**Version 1.14.0**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
 haptics** for games without native DualSense support, full **DS4Windows
-compatibility**, **converted-rumble blending**, and a **controller-speaker effect
-leak** for added immersion — all configurable from a web-based portal.
+compatibility**, **converted-rumble blending**, a **controller-speaker effect
+leak** for added immersion, and **custom captured trigger effects** — record a
+real adaptive-trigger effect from a game that has one and replay it in games that
+don't — all configurable from a web-based portal.
 
 > ⚠️ **Hardware requirement — Pico 2 W only.** The released `.uf2` is built for the
 > **Raspberry Pi Pico 2 W** (RP2350). It will **not** run on the original
@@ -55,6 +57,14 @@ to RAM so native fine haptics and controller audio work without overclocking.
   bursts knock the trigger back against your finger — as a low-frequency vibration
   thump or a mechanical **bow-snap**, selectable per trigger — then resistance
   resumes.
+- **Custom captured effects (new in 1.14.0)** — capture the *actual* adaptive-trigger
+  effects a game sends (weapon walls, resistances, vibrations) and replay them on
+  either trigger in games that have none. Effects are stored as the exact bytes the
+  game sent — nothing is decoded into sliders, so the feel is the original one.
+  Mechanical states are placed by the trigger positions encoded in their own bytes
+  and played **in sequence as you pull** (e.g. wall → wall → end-resistance);
+  vibrations can be captured **with their timing** and replayed to that rhythm.
+  Effects can be saved and shared as JSON files.
 - **Profile slots** — up to 8 complete configurations stored on the dongle
   itself. Save your setups once in the portal; switching later is a single
   instant command instead of a full profile write — used by the automation for
@@ -101,7 +111,7 @@ the PC is actually asleep (where wake needs it).
    this will not run on the original Pico W.)* Hold the BOOTSEL button while
    plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.13.3.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.14.0.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -313,6 +323,127 @@ on gunfire via the auto-haptics envelope. The diagnostics box shows the live
 ≥ 32, so if the number stays 0 while the game rumbles, the selected source isn't
 producing signal.
 
+### Custom Captured Effects (new in 1.14.0)
+
+Capture a real adaptive-trigger effect from a game that has one, and replay it on
+any trigger in a game that doesn't. Effects are stored as the exact 11-byte
+commands the game sent — they are **not** decoded into the sliders above (a game's
+force curves don't survive that round-trip), so what you feel is the original
+effect, not an approximation.
+
+**What can and can't be captured**
+
+- ✅ **Genuine game-sent adaptive-trigger effects** — games with native DualSense
+  trigger support (*Ratchet & Clank*, *God of War Ragnarök*, *Returnal*,
+  *Indiana Jones*…).
+- ❌ **Firmware-converted rumble.** For example *Control*'s trigger buzz is this
+  firmware's own R2T conversion of the game's rumble, not a trigger effect the game
+  sent — there is nothing to capture.
+- ❌ **DS4Windows / Xbox 360 emulated rumble** — same reason.
+
+If the monitor stays empty after you perform the action in-game, that game isn't
+sending trigger effects.
+
+**1. Capture — Trigger Effect Monitor**
+
+1. In the game, perform the trigger action (pull the weapon trigger, hold the
+   spear…).
+2. Alt-tab to the portal → **Trigger Effect Monitor** → **Refresh captured
+   effects**.
+3. The last few *distinct* effects each trigger received are listed, labelled by
+   type (Resistance / Weapon break / Vibration) with their raw bytes.
+4. Tick the states that make up the action (up to 5) → **Assign ticked → custom
+   effect**.
+
+Enable and state count are set for you; **state count is never set by hand**.
+
+**2. How assigned effects replay** — the mode is chosen automatically by type:
+
+- **Mechanical states (Resistance, Weapon break) → positional sequencing.** States
+  are ordered by the trigger positions encoded in their own bytes and played in
+  sequence as you pull, each stage arming just before your finger reaches it. Tick
+  order doesn't matter. This reproduces a full action such as *Ratchet & Clank*'s
+  wall at ~30% → wall at ~50% → light end-resistance in the rapid-fire hold.
+- **Vibration states → time-based.** A 2-state pair blends A↔B at the toggle rate;
+  a timeline recording (below) replays the recorded rhythm instead.
+
+**3. Timeline recording — for vibration rhythm**
+
+The monitor's history carries no timing. When a vibration's character *is* its
+rhythm (switch-then-hold, pulse patterns), use **Timeline recording**: press
+**● Record**, perform the action in-game, then **Stop & fetch**. Every state change
+is listed with the milliseconds it was held; tick the loopable core (up to 5) and
+**Assign ticked timeline**. Replay holds each state for its recorded duration and
+loops — no rate dialling needed.
+
+Durations are **ignored for mechanical states** (a wall's recorded duration is just
+how long you happened to hold it, not part of the effect), so walls and resistances
+always sequence positionally even if you assign them from a timeline or load a file
+that contains durations.
+
+**4. Getting a custom VIBRATION to work**
+
+This is where the **trigger condition** matters:
+
+- **Sustained hold** (e.g. the *God of War Ragnarök* spear): condition **While
+  held**. The effect is asserted continuously and gated by *its own* captured zones
+  — the spear's buzz sits at the deep end of the pull, so it only buzzes when you
+  pull deep. Assign the **sustained state alone**; don't assign the whole timeline,
+  because its long duration is only how long you held the trigger while recording.
+- **Firing kick or release pop**: condition **On press** or **On release**, and the
+  **zone must not be 0**. In those modes the zone is the *engage point* and the
+  effect fires as a short one-shot when the trigger crosses it — at zone 0 the
+  trigger is always already "past" the point, so the crossing never happens and
+  **nothing will ever fire**. Use zone 1–9 (roughly 10–90% of the pull).
+- A vibration asserted while the trigger is held **at full travel** can buzz
+  mechanically (a fully depressed trigger resonates against the controller body).
+  Prefer a one-shot condition, or an effect whose own zones sit deep, over a
+  sustained full-pull buzz.
+
+**Settings (per trigger)**
+
+| Setting | Range | Default | Notes |
+|---|---|---|---|
+| Custom captured effect — enable | Off / On | Off | On = the custom effect **owns** this trigger's effect output (see below) |
+| Custom effect trigger condition | While held / On press / On release | While held | *While held* = armed continuously (mechanical sequencing, sustained vibration). *On press* / *On release* = a ~250 ms one-shot as the trigger crosses the zone |
+| Custom effect zone | 0–9 | 0 | *While held:* the **re-arm zone** — walls reset when the trigger returns below it; **0 = only at full release** (finger off, nothing to push against, no click). *On press / On release:* the **engage point — must be ≥ 1** |
+| Custom effect A↔B toggle rate | 1–100 | 40 | **Only** for 2-state vibration actions (~2–40 Hz). Ignored for mechanical and timeline effects |
+| Custom effect state count | 1–5 | — | **Auto-set** by Assign / file load; never set manually |
+
+**What works — and what doesn't — while a custom effect is enabled**
+
+Enabling a custom effect gives it **exclusive ownership of that trigger's effect
+output**. On that trigger, these have **no effect**:
+
+- Resistance — mode, strength, shape, start position, detent / break point, Strength B
+- Push-back kick — strength, style, thump frequency
+- Trigger-to-rumble (R2T)
+
+These **still work**:
+
+- **The game's own trigger effects** — a native game always wins; the custom effect
+  yields while the game is driving that trigger.
+- **The activation dead zone** — it acts on the trigger *input* the PC sees, a
+  separate mechanism.
+- **The other trigger** — enable is per trigger, so L2 can run the normal slider
+  stack while R2 plays a captured effect.
+- **Everything non-trigger** — auto-haptics, effect leak, gyro, rumble, lightbar.
+
+The exclusivity is deliberate: the resistance/kick path engages on mode and
+position even with its strength at 0, so allowing it to run alongside leaked stray
+kicks (a bow snap on the next press) between custom-effect engagements.
+
+*Tip:* to keep normal R2T/resistance in one game and captured effects in another,
+put them in **separate profile slots** — the automation switches slots per game.
+
+**Sharing effects as files**
+
+**Save ticked to file** writes the effect as readable JSON (raw bytes, plus
+durations for timeline recordings). **Load custom effect file → R2 / L2** loads one
+onto a trigger and sets enable and state count automatically. Note that the
+portal's *Back up all slots* JSON does **not** include custom-effect raw bytes (it
+reconstructs slots field by field) — the on-device slot save/load **does**.
+
 ### Gyro-to-Stick
 Maps controller motion onto the right stick for motion aiming.
 
@@ -462,6 +593,10 @@ is high-passed to protect the small speaker from low-frequency popping.
   applying a wake change through an auto-apply profile is unreliable. **Recommended:
   choose wake on or off once and leave it — don't switch it per-game.** If you rely
   on native haptics or the auto-apply profiles, keep wake **off**.
+- **Upgrading to 1.14.0 (custom effects).** The on-device configuration layout
+  changed in this release. Existing settings migrate, but any custom captured
+  effect assigned under a pre-1.14.0 test build must be **re-assigned** from the
+  Trigger Effect Monitor or re-loaded from its JSON file after flashing.
 - **Hub-induced suspends.** A brief USB suspend caused by a flaky hub (while the host
   is awake) no longer powers off the controller. The power-off is debounced so only a
   sustained suspend — a real sleep or shutdown — powers the controller off; transient
@@ -538,7 +673,7 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.13.3.uf2` — the firmware (flash this; reports version 1.13.2)
+- `ds5-v1.14.0.uf2` — the firmware (flash this; reports version 1.14.0)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)

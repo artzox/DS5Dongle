@@ -159,6 +159,11 @@ const SECTIONS = [
     [0x44,'at_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
     [0x3b,'at_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
     [0x3a,'at_pushback_src','u8','Kick follows (shared by both triggers)','select',{0:'Rumble only',1:'Audio haptics only',2:'Rumble + audio (strongest)'}],
+    [0x57,'ce_r2_enable','u8','Custom captured effect — enable (assign via the Trigger Effect Monitor below)','select',[[0,'Off'],[1,'On']]],
+    [0x58,'ce_r2_condition','u8','Custom effect trigger condition','select',[[0,'While held'],[1,'On press'],[2,'On release']]],
+    [0x59,'ce_r2_thresh','u8','Custom effect zone — press/release: engage point; while-held walls: RE-ARM zone (wall resets when trigger returns below this; 0 = only at full release, click-free)','number',[0,9]],
+    [0x5a,'ce_r2_rate','u8','Custom effect A↔B toggle rate (only for 2-state vibration actions)','number',[1,100]],
+    [0x5b,'ce_r2_state_count','u8','Custom effect state count (auto-set by Assign / file load)','number',[1,5]],
   ]},
   { title: 'Adaptive Triggers — L2 (left trigger)', fields: [
     [0x42,'at_l2_mode','u8','Mode','select',[[0,'Off'],[2,'Always on'],[1,'Gated by R2 (fire trigger)'],[3,'Gated by R1 (shoulder)']]],
@@ -172,6 +177,11 @@ const SECTIONS = [
     [0x47,'at_l2_pushback','u8','Push-back kick (recoil) strength, 0 = no kick','number',[0,100]],
     [0x49,'at_l2_kick_style','u8','Kick style','select',{0:'Vibration thump (buzz)',1:'Bow snap (mechanical push-back)'}],
     [0x48,'at_l2_pushback_freq','u8','Kick thump frequency (lower = heavier)','number',[10,200]],
+    [0x5c,'ce_l2_enable','u8','Custom captured effect — enable (assign via the Trigger Effect Monitor below)','select',[[0,'Off'],[1,'On']]],
+    [0x5d,'ce_l2_condition','u8','Custom effect trigger condition','select',[[0,'While held'],[1,'On press'],[2,'On release']]],
+    [0x5e,'ce_l2_thresh','u8','Custom effect zone — press/release: engage point; while-held walls: RE-ARM zone (wall resets when trigger returns below this; 0 = only at full release, click-free)','number',[0,9]],
+    [0x5f,'ce_l2_rate','u8','Custom effect A↔B toggle rate (only for 2-state vibration actions)','number',[1,100]],
+    [0x60,'ce_l2_state_count','u8','Custom effect state count (auto-set by Assign / file load)','number',[1,5]],
   ]},
   { title: 'Gyro Aiming', fields: [
     [0x2f,'gyro_mode','u8','Mode','select',[[0,'Off'],[2,'Always on'],[1,'Only while L2 (aim) held'],[5,'Only while R2 (fire) held'],[6,'Only while L1 held'],[7,'Only while R1 held'],[3,'Only while touchpad touched'],[4,'Always on — touch touchpad to pause (ratchet)']]],
@@ -574,6 +584,256 @@ async function slotReadField(slot, fdef){ // fdef = [fid,key,type]
   return decField(fdef[2], Array.from(r.slice(5, 5 + sz)));
 }
 
+// ===== Trigger Effect Monitor + Custom Captured Effects (v1.14.0) =====
+function effectTypeName(t){
+  switch(t){
+    case 0x00: return 'None';   case 0x05: return 'Off';
+    case 0x01: case 0x21: return 'Resistance';
+    case 0x02: case 0x22: return 'Bow / snap';
+    case 0x06: case 0x26: return 'Vibration';
+    case 0x23: case 0x25: return 'Weapon break';
+    case 0x27: return 'Multi-pos vibration';
+    default: return 'Type 0x' + t.toString(16).padStart(2,'0');
+  }
+}
+function isVibrationType(t){ return t === 0x26 || t === 0x06 || t === 0x27; }
+async function readEffectHistory(trig, slot){
+  await sendCmd(0x0e, [trig, slot]);
+  const r = await readCmdReplyOn(SLOT_REPORT, 0x0e, undefined, 12);
+  if (!r || r[2] !== 0x00) return null;
+  return Array.from(r.slice(5, 16));
+}
+async function readTriggerEffects(trig){
+  const out = [];
+  for (let s = 0; s < 6; s++){
+    const eff = await readEffectHistory(trig, s);
+    if (!eff) break;
+    if (eff.every(b => b === 0)) continue;
+    out.push(eff);
+  }
+  return out;
+}
+// last-refreshed effects, per trigger, so the checkboxes map to bytes
+window._monEffects = { 0: [], 1: [] };
+async function refreshEffectMonitor(){
+  const box = document.getElementById('effmon');
+  if (!box) return;
+  try {
+    let html = '';
+    for (const [trig, label] of [[0,'R2 (right)'],[1,'L2 (left)']]){
+      const effs = await hidLocked(() => readTriggerEffects(trig));
+      window._monEffects[trig] = effs;
+      html += `<div style="margin:8px 0"><b>${label}</b>`;
+      if (!effs.length){ html += ` <span style="color:var(--sub)">— nothing captured yet (trigger the effect in-game, then Refresh)</span></div>`; continue; }
+      html += `<div style="font-size:11px;color:var(--sub);margin:2px 0">Tick up to 5 states that make up one action. Mechanical states (walls, resistances) are placed by their trigger positions and played in sequence as you pull (e.g. wall → wall → end-resistance, or a resistance before a wall); vibration pairs blend at the rate slider.</div>`;
+      effs.forEach((eff, i) => {
+        const nm = effectTypeName(eff[0]);
+        const hex = eff.map(b => b.toString(16).padStart(2,'0')).join(' ');
+        html += `<div style="display:flex;gap:8px;align-items:center;margin:2px 0;font-size:12px">
+          <input type="checkbox" id="mon_${trig}_${i}" onchange="onMonPick(${trig})">
+          <span style="min-width:110px"><b>${nm}</b>${i===0?' (newest)':''}</span>
+          <code style="color:var(--sub);font-size:11px">${hex}</code></div>`;
+      });
+      html += `<div style="margin-top:4px"><button class="btn btn-outline" style="padding:2px 10px" onclick="assignCustom(${trig})">Assign ticked → custom effect (${trig===0?'R2':'L2'})</button>
+        <button class="btn btn-outline" style="padding:2px 10px" onclick="saveCustomFile(${trig})">Save ticked to file</button></div></div>`;
+    }
+    box.innerHTML = html;
+  } catch(e){ box.innerHTML = 'Monitor error: ' + (e && e.message ? e.message : e); }
+}
+function getMonPicks(trig){
+  const effs = window._monEffects[trig] || [];
+  const picks = [];
+  effs.forEach((eff,i) => { const c = document.getElementById(`mon_${trig}_${i}`); if (c && c.checked) picks.push(eff); });
+  return picks;
+}
+function onMonPick(trig){
+  const picks = getMonPicks(trig);
+  if (picks.length > 5){ // cap at 5 (config stores 5 states)
+    const effs = window._monEffects[trig] || [];
+    let seen = 0;
+    effs.forEach((eff,i)=>{ const c=document.getElementById(`mon_${trig}_${i}`); if(c&&c.checked){ seen++; if(seen>5) c.checked=false; } });
+  }
+}
+// Write the ticked states into the live config as a custom effect on this trigger.
+async function assignCustom(trig){
+  const picks = getMonPicks(trig);
+  if (!picks.length){ alert('Tick 1 or 2 states first.'); return; }
+  try {
+    await hidLocked(async () => {
+      // write state A (and B if present) via cmd 0x11
+      for (let s = 0; s < picks.length; s++){
+        await sendCmd(0x11, [trig, s, ...picks[s]]);
+        await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
+      }
+      // set scalar controls: enable=1, state_count, default condition=hold, thresh=1, rate=40
+      const base = trig === 0 ? 0x57 : 0x5c;
+      await sendCmd(base + 0, [1]);              // enable
+      await sendCmd(base + 4, [picks.length]);   // state_count
+    });
+    // reflect in the editor: set config values + mark dirty, then re-render
+    const pfx = trig === 0 ? 'ce_r2' : 'ce_l2';
+    config[pfx + '_enable'] = 1;
+    config[pfx + '_state_count'] = picks.length;
+    (window._dirty = window._dirty || {})[pfx + '_enable'] = 1;
+    window._dirty[pfx + '_state_count'] = 1;
+    render();
+    alert(`Assigned ${picks.length}-state custom effect to ${trig===0?'R2':'L2'}. Set condition/threshold/rate in the Custom Effect fields above, then Save to a slot.`);
+  } catch(e){ alert('Assign failed: ' + (e && e.message ? e.message : e)); }
+}
+// Save ticked states to a JSON file (transport / sharing).
+function saveCustomFile(trig){
+  const picks = getMonPicks(trig);
+  if (!picks.length){ alert('Tick 1 or 2 states first.'); return; }
+  const dump = {
+    format: 'ds5dongle-custom-effect', version: 1,
+    source: trig===0?'R2':'L2',
+    state_count: picks.length,
+    states: picks.map(e => ({ type: '0x'+e[0].toString(16).padStart(2,'0'), name: effectTypeName(e[0]), bytes: e }))
+  };
+  const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  a.href = URL.createObjectURL(blob); a.download = `ds5-custom-effect-${trig===0?'r2':'l2'}-${stamp}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+// ===== Timeline capture (v1.14.0): record the real rhythm, replay verbatim =====
+async function tlSetArmed(on){
+  await sendCmd(0x13, [on ? 1 : 0]);
+  const r = await readCmdReplyOn(SLOT_REPORT, 0x13, undefined, 12);
+  return !!(r && r[2] === 0x00);
+}
+async function tlReadEntry(trig, idx){
+  await sendCmd(0x14, [trig, idx]);
+  const r = await readCmdReplyOn(SLOT_REPORT, 0x14, undefined, 12);
+  if (!r) return null;
+  const count = r[5];
+  if (r[2] !== 0x00) return { count, entry: null };
+  return { count, entry: { dt: r[6] | (r[7] << 8), bytes: Array.from(r.slice(8, 19)) } };
+}
+window._tlData = { 0: [], 1: [] };
+async function tlRecordStart(){
+  try {
+    const ok = await hidLocked(() => tlSetArmed(true));
+    document.getElementById('tlbox').innerHTML = ok
+      ? '<b>● Recording…</b> perform the trigger action in-game, then press Stop & fetch.'
+      : 'Arm failed.';
+  } catch(e){ alert('Record failed: ' + e); }
+}
+async function tlRecordStop(){
+  const box = document.getElementById('tlbox');
+  try {
+    await hidLocked(async () => {
+      await tlSetArmed(false);
+      for (const trig of [0,1]){
+        const list = [];
+        const first = await tlReadEntry(trig, 0);
+        const n = first ? Math.min(first.count, 16) : 0;
+        if (first && first.entry) list.push(first.entry);
+        for (let i = 1; i < n; i++){
+          const r = await tlReadEntry(trig, i);
+          if (r && r.entry) list.push(r.entry);
+        }
+        window._tlData[trig] = list;
+      }
+    });
+    let html = '';
+    for (const [trig,label] of [[0,'R2'],[1,'L2']]){
+      const tl = window._tlData[trig];
+      html += `<div style="margin:6px 0"><b>${label} timeline</b>`;
+      if (!tl.length){ html += ` <span style="color:var(--sub)">— nothing recorded</span></div>`; continue; }
+      html += ` <span style="color:var(--sub);font-size:11px">(tick up to 5 entries — the loopable core of the action — then Assign)</span>`;
+      tl.forEach((e,i)=>{
+        const nm = effectTypeName(e.bytes[0]);
+        const hex = e.bytes.map(b=>b.toString(16).padStart(2,'0')).join(' ');
+        html += `<div style="display:flex;gap:8px;align-items:center;margin:2px 0;font-size:12px">
+          <input type="checkbox" id="tl_${trig}_${i}">
+          <span style="min-width:150px"><b>${nm}</b> — ${e.dt} ms</span>
+          <code style="color:var(--sub);font-size:11px">${hex}</code></div>`;
+      });
+      html += `<div style="margin-top:4px">
+        <button class="btn btn-outline" style="padding:2px 10px" onclick="tlAssign(${trig})">Assign ticked timeline → ${label}</button>
+        <button class="btn btn-outline" style="padding:2px 10px" onclick="tlSaveFile(${trig})">Save ticked to file</button></div></div>`;
+    }
+    box.innerHTML = html || 'No timeline.';
+  } catch(e){ box.innerHTML = 'Fetch failed: ' + e; }
+}
+function tlPicks(trig){
+  const tl = window._tlData[trig] || [];
+  const picks = [];
+  tl.forEach((e,i)=>{ const c=document.getElementById(`tl_${trig}_${i}`); if(c&&c.checked) picks.push(e); });
+  return picks.slice(0,5);
+}
+async function tlAssign(trig){
+  const picks = tlPicks(trig);
+  if (!picks.length){ alert('Tick 1-5 timeline entries first.'); return; }
+  try {
+    await hidLocked(async () => {
+      for (let i = 0; i < picks.length; i++){
+        const t = picks[i].bytes[0];
+        const mech = (t===0x21||t===0x01||t===0x25||t===0x23);
+        const dt = mech ? 0 : Math.min(65535, picks[i].dt|0);
+        await sendCmd(0x11, [trig, i, ...picks[i].bytes, dt & 0xFF, (dt >> 8) & 0xFF]);
+        await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
+      }
+      const base = trig === 0 ? 0x57 : 0x5c;
+      await sendCmd(base + 0, [1]);              // enable
+      await sendCmd(base + 4, [picks.length]);   // state_count
+    });
+    const pfx2 = trig===0?'ce_r2':'ce_l2';
+    config[pfx2 + '_enable'] = 1;
+    config[pfx2 + '_state_count'] = picks.length;
+    alert(`Assigned ${picks.length}-entry TIMELINE to ${trig===0?'R2':'L2'} — replays with the recorded timing (rate slider not used). Save to a slot to keep it.`);
+  } catch(e){ alert('Assign failed: ' + e); }
+}
+function tlSaveFile(trig){
+  const picks = tlPicks(trig);
+  if (!picks.length){ alert('Tick entries first.'); return; }
+  const dump = { format:'ds5dongle-custom-effect', version:2, source: trig===0?'R2':'L2',
+    state_count: picks.length,
+    states: picks.map(e => ({ type:'0x'+e.bytes[0].toString(16).padStart(2,'0'),
+      name: effectTypeName(e.bytes[0]), bytes: e.bytes, duration_ms: e.dt })) };
+  const blob = new Blob([JSON.stringify(dump,null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ds5-timeline-${trig===0?'r2':'l2'}-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+
+// Load a custom-effect file and write it to a trigger.
+async function loadCustomFile(event, trig){
+  const file = event.target.files[0]; if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (data.format !== 'ds5dongle-custom-effect') throw new Error('not a custom-effect file');
+    if (!data.states || !data.states.length) throw new Error('no states in file');
+    const n = Math.min(5, data.states.length);
+    await hidLocked(async () => {
+      for (let s = 0; s < n; s++){
+        const st = data.states[s];
+        const t = st.bytes[0];
+        const mech = (t===0x21||t===0x01||t===0x25||t===0x23);
+        // mechanical states never timeline-play - durations are game-state timing
+        const dt = mech ? 0 : Math.min(65535, (st.duration_ms|0) || 0);
+        await sendCmd(0x11, [trig, s, ...st.bytes, dt & 0xFF, (dt >> 8) & 0xFF]);
+        await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
+      }
+      const base = trig === 0 ? 0x57 : 0x5c;
+      await sendCmd(base + 0, [1]);
+      await sendCmd(base + 4, [n]);
+    });
+    const pfx = trig === 0 ? 'ce_r2' : 'ce_l2';
+    config[pfx + '_enable'] = 1;
+    config[pfx + '_state_count'] = n;
+    (window._dirty = window._dirty || {})[pfx + '_enable'] = 1;
+    window._dirty[pfx + '_state_count'] = 1;
+    render();
+    alert(`Loaded ${n}-state custom effect onto ${trig===0?'R2':'L2'} (state count auto-set). Configure and Save to a slot.`);
+  } catch(e){ alert('Load failed: ' + (e && e.message ? e.message : e)); }
+  event.target.value = '';
+}
+
 // Back up ALL slots to one JSON file: names + every field value per valid slot.
 async function backupAllSlots(){
   const status = document.getElementById('backupStatus');
@@ -928,7 +1188,7 @@ setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && documen
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.13.3</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.14.0</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
@@ -973,6 +1233,21 @@ function render(){
   <div class="card"><div class="card-title">Profile Slots <span style="font-size:11px;color:var(--sub)">(stored on the dongle — fw 1.1.2+)</span></div>
     <div style="font-size:12px;color:var(--sub);margin-bottom:6px">Save the current settings into a numbered slot once; activating a slot later is a single instant command (used by the automation via slot-activate.html).</div>
     <div id="slotbox" style="font-size:13px">Connect to manage slots.</div></div>
+  <div class="card"><div class="card-title">Trigger Effect Monitor &amp; Custom Effects <span style="font-size:11px;color:var(--sub)">(capture real game effects)</span></div>
+    <div style="font-size:12px;color:var(--sub);margin-bottom:6px">Captures genuine adaptive-trigger effects a game sends (resistance, weapon-break, vibration). Play the game, do the action, press Refresh. Tick the states that make up one action (up to 5), then <b>Assign</b>. Mechanical states (weapon-breaks, resistances) replay <b>positionally in sequence</b> along the pull — walls and resistances land at their captured trigger positions; vibration pairs blend at the rate slider. Configure the condition/threshold/rate in the trigger's Custom Effect fields above, then Save to a slot. <b>Note:</b> only real game-sent effects capture — firmware-converted rumble (e.g. Control) and DS4Windows/Xbox rumble do not, as those aren't trigger effects the game sent.</div>
+    <button class="btn btn-outline" style="padding:2px 10px;margin-bottom:4px" onclick="refreshEffectMonitor()">Refresh captured effects</button>
+    <span style="font-size:12px;color:var(--sub)"> · Load custom effect file → </span>
+    <button class="btn btn-outline" style="padding:2px 8px" onclick="document.getElementById('ceFileR2').click()">R2</button>
+    <button class="btn btn-outline" style="padding:2px 8px" onclick="document.getElementById('ceFileL2').click()">L2</button>
+    <input type="file" id="ceFileR2" accept=".json" style="display:none" onchange="loadCustomFile(event,0)">
+    <input type="file" id="ceFileL2" accept=".json" style="display:none" onchange="loadCustomFile(event,1)">
+    <div id="effmon" style="font-size:13px;margin-top:6px">Connect and press Refresh after triggering an effect in-game.</div>
+    <div style="border-top:1px solid var(--line,#333);margin-top:8px;padding-top:6px">
+      <b style="font-size:13px">Timeline recording</b> <span style="font-size:11px;color:var(--sub)">— captures the effect's real RHYTHM (each state's held duration), so replay needs no rate dial-in. Record → do the action in-game → Stop &amp; fetch → tick the loopable core → Assign.</span><br>
+      <button class="btn btn-outline" style="padding:2px 10px;margin-top:4px" onclick="tlRecordStart()">● Record</button>
+      <button class="btn btn-outline" style="padding:2px 10px;margin-top:4px" onclick="tlRecordStop()">Stop &amp; fetch</button>
+      <div id="tlbox" style="font-size:13px;margin-top:6px;color:var(--sub)">Not recording.</div>
+    </div></div>
   <div class="card"><div class="card-title">Diagnostic</div>
     <div id="diagbox" style="font-size:12px;color:var(--sub)">Reading live stream…</div></div>`;
   app.innerHTML=html;
