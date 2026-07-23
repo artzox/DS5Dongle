@@ -35,8 +35,8 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
 // Firmware version, reported via read-only fields 0x7D/0x7E/0x7F so the portal
 // can display which build is flashed. Bump on every released build.
 constexpr uint8_t FW_VER_MAJOR = 1;
-constexpr uint8_t FW_VER_MINOR = 13;
-constexpr uint8_t FW_VER_PATCH = 3;
+constexpr uint8_t FW_VER_MINOR = 14;
+constexpr uint8_t FW_VER_PATCH = 0;
 
 template<typename T>
 static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
@@ -213,6 +213,16 @@ static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t cons
         case 0x54: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_l2_deadzone=v; break; }
         case 0x55: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.mix_native_level=v; break; }
         case 0x56: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_max_burst=v; break; }
+        case 0x57: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_enable=v; break; }
+        case 0x58: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_condition=v; break; }
+        case 0x59: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_thresh=v; break; }
+        case 0x5a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_rate=v; break; }
+        case 0x5b: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_state_count=v; break; }
+        case 0x5c: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_l2_enable=v; break; }
+        case 0x5d: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_l2_condition=v; break; }
+        case 0x5e: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_l2_thresh=v; break; }
+        case 0x5f: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_l2_rate=v; break; }
+        case 0x60: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_l2_state_count=v; break; }
         case 0x44: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_kick_style=v; break; }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
@@ -324,6 +334,16 @@ static bool get_config_field_from(const Config_body &config, uint8_t field_id, u
         case 0x54: return write_config_value(buffer, bufsize, config.at_l2_deadzone);
         case 0x55: return write_config_value(buffer, bufsize, config.mix_native_level);
         case 0x56: return write_config_value(buffer, bufsize, config.effect_leak_max_burst);
+        case 0x57: return write_config_value(buffer, bufsize, config.ce_r2_enable);
+        case 0x58: return write_config_value(buffer, bufsize, config.ce_r2_condition);
+        case 0x59: return write_config_value(buffer, bufsize, config.ce_r2_thresh);
+        case 0x5a: return write_config_value(buffer, bufsize, config.ce_r2_rate);
+        case 0x5b: return write_config_value(buffer, bufsize, config.ce_r2_state_count);
+        case 0x5c: return write_config_value(buffer, bufsize, config.ce_l2_enable);
+        case 0x5d: return write_config_value(buffer, bufsize, config.ce_l2_condition);
+        case 0x5e: return write_config_value(buffer, bufsize, config.ce_l2_thresh);
+        case 0x5f: return write_config_value(buffer, bufsize, config.ce_l2_rate);
+        case 0x60: return write_config_value(buffer, bufsize, config.ce_l2_state_count);
         case 0x44: return write_config_value(buffer, bufsize, config.at_kick_style);
         case 0x3c: { extern volatile uint8_t g_diag_at_env; return write_config_value(buffer, bufsize, (uint8_t)g_diag_at_env); }
         case 0x35: { extern volatile uint16_t g_diag_gyro; return write_config_value(buffer, bufsize, (uint16_t)g_diag_gyro); }
@@ -545,6 +565,98 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
                 }
             }
             feature_data[0x84].assign(buf, buf + sizeof(buf)); // 0x84: portal 0x81 poll can't clobber backup reads
+            break;
+        }
+
+        case 0x0e: {
+            // READ effect-capture history (monitor). Payload: [trig, slot].
+            // trig 0=R2, 1=L2; slot 0=newest. Reply: 0x66 0x0e status trig slot <11 bytes>.
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x0e; buf[2] = 0x01;
+            if (bufsize >= 2 && buffer[0] <= 1) {
+                buf[3] = buffer[0]; buf[4] = buffer[1];
+                uint8_t eff[11]{};
+                extern bool get_effect_history(uint8_t trig, uint8_t slot, uint8_t out[11]);
+                if (get_effect_history(buffer[0], buffer[1], eff)) {
+                    buf[2] = 0x00;
+                    memcpy(buf + 5, eff, 11);
+                }
+            }
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
+            break;
+        }
+
+        case 0x11: {
+            // WRITE a custom-effect state (raw bytes) into the LIVE config.
+            // Payload: [trig(0=R2,1=L2), state(0=A,1=B), <11 effect bytes>].
+            // Reply: 0x66 0x11 status trig state. Stored verbatim (no decode).
+            // Payload: [trig, idx(0..5), <11 bytes>, (optional) dt_lo, dt_hi].
+            // dt = per-state hold in ms for TIMELINE replay; absent/0 = rate mode.
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x11; buf[2] = 0x01;
+            if (bufsize >= 13 && buffer[0] <= 1 && buffer[1] <= 4) {
+                Config_body nc = get_config();
+                uint8_t *dst = (buffer[0] == 0) ? nc.ce_r2_states[buffer[1]]
+                                                : nc.ce_l2_states[buffer[1]];
+                memcpy(dst, buffer + 2, 11);
+                uint16_t dt = (bufsize >= 15)
+                    ? (uint16_t)(buffer[13] | ((uint16_t)buffer[14] << 8)) : 0;
+                if (buffer[0] == 0) nc.ce_r2_dt[buffer[1]] = dt;
+                else                nc.ce_l2_dt[buffer[1]] = dt;
+                set_config(nc);
+                buf[2] = 0x00; buf[3] = buffer[0]; buf[4] = buffer[1];
+            }
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
+            break;
+        }
+
+        case 0x12: {
+            // READ a custom-effect state (raw bytes) from the LIVE config.
+            // Payload: [trig, state]. Reply: 0x66 0x12 status trig state <11 bytes>.
+            // Reply: 0x66 0x12 status trig idx <11 bytes> dt_lo dt_hi
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x12; buf[2] = 0x01;
+            if (bufsize >= 2 && buffer[0] <= 1 && buffer[1] <= 4) {
+                const Config_body &c = get_config();
+                const uint8_t *src = (buffer[0] == 0) ? c.ce_r2_states[buffer[1]]
+                                                      : c.ce_l2_states[buffer[1]];
+                uint16_t dt = (buffer[0] == 0) ? c.ce_r2_dt[buffer[1]] : c.ce_l2_dt[buffer[1]];
+                buf[2] = 0x00; buf[3] = buffer[0]; buf[4] = buffer[1];
+                memcpy(buf + 5, src, 11);
+                buf[16] = (uint8_t)(dt & 0xFF); buf[17] = (uint8_t)(dt >> 8);
+            }
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
+            break;
+        }
+
+        case 0x13: {
+            // TIMELINE record arm/stop. Payload: [1=arm, 0=stop]. While armed the
+            // firmware logs every trigger-FFB change (incl. Off) with held-durations.
+            // Reply: 0x66 0x13 0x00 armed.
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x13; buf[2] = 0x00;
+            extern void tl_set_armed(bool on);
+            const bool arm = (bufsize >= 1 && buffer[0] != 0);
+            tl_set_armed(arm);
+            buf[3] = arm ? 1 : 0;
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
+            break;
+        }
+
+        case 0x14: {
+            // READ a recorded timeline entry. Payload: [trig, idx].
+            // Reply: 0x66 0x14 status trig idx count dt_lo dt_hi <11 bytes>.
+            // status 0x01 with count set = idx out of range (use count to iterate).
+            uint8_t buf[63]{}; buf[0] = 0x66; buf[1] = 0x14; buf[2] = 0x01;
+            if (bufsize >= 2 && buffer[0] <= 1) {
+                extern bool tl_read(uint8_t trig, uint8_t idx, uint8_t out[11],
+                                    uint16_t *dt, uint8_t *count);
+                uint8_t eff[11]{}; uint16_t dt = 0; uint8_t count = 0;
+                const bool ok = tl_read(buffer[0], buffer[1], eff, &dt, &count);
+                buf[3] = buffer[0]; buf[4] = buffer[1]; buf[5] = count;
+                if (ok) {
+                    buf[2] = 0x00;
+                    buf[6] = (uint8_t)(dt & 0xFF); buf[7] = (uint8_t)(dt >> 8);
+                    memcpy(buf + 8, eff, 11);
+                }
+            }
+            feature_data[0x84].assign(buf, buf + sizeof(buf));
             break;
         }
 

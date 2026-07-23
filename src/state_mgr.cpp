@@ -55,6 +55,55 @@ static bool synth_owned_l2 = false, synth_owned_r2 = false, at_engaged = false, 
 static uint8_t  g_host_cache[sizeof(SetStateData)];
 static uint8_t  g_host_cache_size = 0;
 static uint32_t g_last_host_ms = 0;
+// Effect-capture history (monitor): last N distinct trigger effects each trigger
+// received from the game, newest at [0]. Read by the portal effect monitor.
+static constexpr int HIST_DEPTH = 6;
+static uint8_t g_eff_hist_r2[HIST_DEPTH][11] = {};
+static uint8_t g_eff_hist_l2[HIST_DEPTH][11] = {};
+// Force one state send even if bytes are unchanged (bypasses change-suppression
+// for the weapon-break re-arm: a fresh identical re-send re-arms the break
+// without the Off->wall drop that caused the perceptible click).
+static bool g_ce_force_send = false;
+// -- Timeline recorder (v1.14.0): when armed, records EVERY trigger-FFB change
+// (including Off) per trigger WITH the duration the previous state was held.
+// The dedup'd history above loses all timing; this captures the real rhythm
+// (e.g. GoW's switch-then-HOLD) so replay needs no rate dial-in.
+static constexpr int TL_MAX = 16;
+static bool     g_tl_armed = false;
+static uint8_t  g_tl_eff[2][TL_MAX][11] = {};
+static uint16_t g_tl_dt[2][TL_MAX] = {};
+static uint8_t  g_tl_count[2] = {};
+static uint32_t g_tl_last_change[2] = {};
+void tl_set_armed(bool on) {
+    if (on) {
+        g_tl_count[0] = g_tl_count[1] = 0;
+        g_tl_last_change[0] = g_tl_last_change[1] = 0;
+        g_tl_armed = true;
+    } else {
+        // finalize the open (last) entry's duration on stop
+        const uint32_t now = to_ms_since_boot(get_absolute_time());
+        for (int t = 0; t < 2; ++t)
+            if (g_tl_count[t] > 0 && g_tl_last_change[t] != 0) {
+                uint32_t d = now - g_tl_last_change[t];
+                g_tl_dt[t][g_tl_count[t] - 1] = (d > 0xFFFF) ? 0xFFFF : (uint16_t)d;
+            }
+        g_tl_armed = false;
+    }
+}
+bool tl_read(uint8_t trig, uint8_t idx, uint8_t out[11], uint16_t *dt, uint8_t *count) {
+    if (trig > 1) return false;
+    *count = g_tl_count[trig];
+    if (idx >= g_tl_count[trig]) return false;
+    memcpy(out, g_tl_eff[trig][idx], 11);
+    *dt = g_tl_dt[trig][idx];
+    return true;
+}
+bool get_effect_history(uint8_t trig, uint8_t slot, uint8_t out[11]) {
+    if (slot >= HIST_DEPTH) return false;
+    const uint8_t (*h)[11] = (trig == 0) ? g_eff_hist_r2 : g_eff_hist_l2;
+    memcpy(out, h[slot], 11);
+    return true;
+}
 
 static bool state_update_apply(const uint8_t *data, uint8_t size);
 
@@ -263,6 +312,39 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
             update.LeftTriggerFFB[0] != 0x00 && update.LeftTriggerFFB[0] != 0x05;
         if (game_r2_now) { last_game_r2_ms = now_ms; game_ever_r2 = true; }
         if (game_l2_now) { last_game_l2_ms = now_ms; game_ever_l2 = true; }
+        // Effect-capture history: store the last few DISTINCT trigger effects each
+        // trigger received (dedup consecutive identical), newest at [0].
+        {
+            auto push_hist = [](uint8_t (*hist)[11], const uint8_t *eff) {
+                if (memcmp(hist[0], eff, 11) == 0) return;
+                for (int k = HIST_DEPTH - 1; k > 0; k--) memcpy(hist[k], hist[k-1], 11);
+                memcpy(hist[0], eff, 11);
+            };
+            if (game_r2_now) push_hist(g_eff_hist_r2, update.RightTriggerFFB);
+            if (game_l2_now) push_hist(g_eff_hist_l2, update.LeftTriggerFFB);
+            // Timeline recorder: while armed, log EVERY change (incl. Off) with the
+            // held-duration of the previous state — timing is the whole point here.
+            if (g_tl_armed) {
+                const uint32_t tnow = to_ms_since_boot(get_absolute_time());
+                auto tl_push = [&](int t, const uint8_t *eff, bool allow) {
+                    if (!allow) return;
+                    const uint8_t n = g_tl_count[t];
+                    if (n > 0 && memcmp(g_tl_eff[t][n-1], eff, 11) == 0) return; // unchanged
+                    if (n > 0) {
+                        uint32_t d = tnow - g_tl_last_change[t];
+                        g_tl_dt[t][n-1] = (d > 0xFFFF) ? 0xFFFF : (uint16_t)d;
+                    }
+                    if (n < TL_MAX) {
+                        memcpy(g_tl_eff[t][n], eff, 11);
+                        g_tl_dt[t][n] = 0;               // open until next change/stop
+                        g_tl_count[t] = n + 1;
+                        g_tl_last_change[t] = tnow;
+                    }
+                };
+                tl_push(0, update.RightTriggerFFB, update.AllowRightTriggerFFB);
+                tl_push(1, update.LeftTriggerFFB,  update.AllowLeftTriggerFFB);
+            }
+        }
         constexpr uint32_t GAME_FFB_YIELD_MS = 3000;
         bool game_owns_r2 = game_r2_now ||
             (game_ever_r2 && (now_ms - last_game_r2_ms) < GAME_FFB_YIELD_MS);
@@ -320,6 +402,197 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // release hysteresis. Any combination is valid: L2 always + R2 gated,
         // L2 always + R2 off, both gated (each armed by the other), etc.
         extern volatile uint8_t g_l2_pos, g_r2_pos, g_l1_btn, g_r1_btn;
+
+        // -- Custom captured-effect action (v1.14.0): plays raw captured effect
+        // states with NO fidelity loss. While the trigger is engaged (per condition
+        // + threshold, dead-zone-compatible), write state A or B directly. For a
+        // 2-state action, cycle A<->B at the configured rate (reproduces the game's
+        // own rapid alternation - the pump/pull-through feel). on-press/on-release
+        // fire a one-shot (a brief window). Positions ride inside each state's bytes.
+        static float ce_phase_r2 = 0.0f, ce_phase_l2 = 0.0f;
+        static uint8_t ce_last_r2_pos = 0, ce_last_l2_pos = 0;
+        static uint32_t ce_oneshot_r2_until = 0, ce_oneshot_l2_until = 0;
+        // Weapon-break re-arm: a 0x25 break is CONSUMED when pushed through, so to
+        // feel it on the next press it must be re-armed with a FRESH re-send. Identical
+        // bytes are change-suppressed (won't re-arm), so when the trigger returns toward
+        // rest we emit ONE cycle of Off (0x05) to break the suppression; the next cycle's
+        // break write is then seen as new and re-arms. Only for break-type states.
+        static bool ce_rearm_pulse_r2 = false, ce_rearm_pulse_l2 = false;
+        static uint8_t  ce_tl_idx_r2 = 0, ce_tl_idx_l2 = 0;
+        static uint32_t ce_tl_next_r2 = 0, ce_tl_next_l2 = 0;
+        // Two-wall sequencer stage: 0 = lower wall armed, 1 = upper wall armed.
+        static uint8_t  ce_seq_stage_r2 = 0, ce_seq_stage_l2 = 0;
+        static bool ce_broke_r2 = false, ce_broke_l2 = false;
+        bool ce_active_r2 = false, ce_active_l2 = false;
+        const uint8_t *ce_write_r2 = nullptr, *ce_write_l2 = nullptr;
+        const uint8_t *ce_seq_r2 = nullptr, *ce_seq_l2 = nullptr;
+        {
+            const uint32_t now_ms = g_last_host_ms;
+            auto zpos = [](uint8_t z) -> uint8_t { return (uint8_t)(((uint16_t)z * 51u) / 2u); };
+            // Pick the state to write for a given trigger's action this cycle.
+            // Pick the state to write this cycle. TWO modes, per assignment:
+            //  - TIMELINE (any dt > 0): hold each state for its recorded duration,
+            //    advance, loop. Reproduces asymmetric rhythms (switch-then-HOLD)
+            //    verbatim - no rate dial-in.
+            //  - RATE (all dt == 0): A<->B toggle at the rate slider (states 0/1) -
+            //    the mode whose ~25Hz blend "stacks" mechanical pairs nicely.
+            auto pick_state = [&](const uint8_t (*states)[11], const uint16_t *dt,
+                                  uint8_t count, uint8_t rate, float &phase,
+                                  uint8_t &tl_idx, uint32_t &tl_next) -> const uint8_t* {
+                if (count < 2) return states[0];
+                bool timeline = false;
+                for (uint8_t i = 0; i < count; ++i) if (dt[i] > 0) { timeline = true; break; }
+                const uint32_t nowm = to_ms_since_boot(get_absolute_time());
+                if (timeline) {
+                    if (tl_next == 0) { tl_idx = 0; tl_next = nowm + (dt[0] ? dt[0] : 1); }
+                    if (nowm >= tl_next) {
+                        tl_idx = (uint8_t)((tl_idx + 1) % count);
+                        tl_next = nowm + (dt[tl_idx] ? dt[tl_idx] : 1);
+                    }
+                    return states[tl_idx];
+                }
+                // rate mode: toggle states 0/1 each half-cycle. rate 1..100 -> ~2..40 Hz.
+                float hz = 2.0f + (rate / 100.0f) * 38.0f;
+                phase += hz * 0.004f; // ~4ms/cycle
+                if (phase >= 1.0f) phase -= 1.0f;
+                return (phase < 0.5f) ? states[0] : states[1];
+            };
+            // Decode a wall state's zone span (bytes 1-2 bitmap) -> lowest/highest set zone.
+            auto wall_zones = [](const uint8_t *st, uint8_t &zlo, uint8_t &zhi) {
+                const uint16_t zb = (uint16_t)st[1] | ((uint16_t)(st[2] & 0x03) << 8);
+                zlo = 2; zhi = 8;
+                if (zb) {
+                    zlo = 0; while (zlo < 10 && !(zb & (1u << zlo))) zlo++;
+                    zhi = 9; while (zhi > 0 && !(zb & (1u << zhi))) zhi--;
+                }
+            };
+            // N-STAGE POSITIONAL SEQUENCER (2..5 MECHANICAL states - walls AND
+            // resistances - with dt=0 and distinct start zones): sort by start zone;
+            // arm each next stage just before the pull reaches its region (start-12,
+            // so the armed region is AHEAD of the finger = click-free, and the
+            // previous wall keeps its full span); reset to stage 0 when the trigger
+            // returns below the re-arm zone. Reproduces e.g. R&C's three-stage
+            // wall -> wall -> end-resistance, or a resistance BEFORE a wall.
+            // Returns the state to write, or nullptr if this set isn't sequencable
+            // (any vibration state, timeline durations, or ambiguous zones).
+            auto run_sequencer = [&](const uint8_t (*states)[11], const uint16_t *dt,
+                                     uint8_t count, uint8_t pos, uint8_t rearm_pos,
+                                     uint8_t &stage, bool &rearm_pulse) -> const uint8_t* {
+                (void)dt;
+                if (count < 2 || count > 5) return nullptr;
+                uint8_t order[5]; uint8_t zlo[5];
+                for (uint8_t i = 0; i < count; ++i) {
+                    const uint8_t t = states[i][0];
+                    const bool mech = (t == 0x21 || t == 0x01 || t == 0x25 || t == 0x23);
+                    if (!mech) return nullptr;
+                    // NOTE: recorded durations are IGNORED for mechanical sets - they are
+                    // game-state/performance timing, not effect structure (taxonomy). This
+                    // also rescues timeline-saved files: loading one with durations used to
+                    // drop the set into the timeline stepper, which swapped wall/resistance
+                    // on multi-second timers - felt as "works sometimes" plus phantom clicks
+                    // at rest as states toggled under the finger. Mechanical => positional.
+                    uint8_t hi_;
+                    wall_zones(states[i], zlo[i], hi_); (void)hi_;
+                    order[i] = i;
+                }
+                for (uint8_t a = 1; a < count; ++a)
+                    for (uint8_t b = a; b > 0 && zlo[order[b]] < zlo[order[b-1]]; --b) {
+                        uint8_t tmp = order[b]; order[b] = order[b-1]; order[b-1] = tmp;
+                    }
+                for (uint8_t a = 1; a < count; ++a)
+                    if (zlo[order[a]] == zlo[order[a-1]]) return nullptr;
+                if (stage >= count) stage = 0;
+                while (stage + 1 < count) {
+                    int sw = (int)zpos(zlo[order[stage + 1]]) - 12;
+                    if (sw < 1) sw = 1;
+                    if (pos >= (uint8_t)sw) { stage++; rearm_pulse = true; }
+                    else break;
+                }
+                if (stage != 0 && pos <= rearm_pos) { stage = 0; rearm_pulse = true; }
+                return states[order[stage]];
+            };
+            // R2
+            if (cfg.ce_r2_enable && !game_owns_r2) {
+                const uint8_t thr = zpos(cfg.ce_r2_thresh);
+                const bool past = g_r2_pos >= thr;
+                const bool was_past = ce_last_r2_pos >= thr;
+                if (cfg.ce_r2_condition == 0) {              // while held / always-armed
+                    // Assert continuously so a re-press finds the wall already in place.
+                    // In while-held mode the thresh field is the RE-ARM ZONE: walls
+                    // re-arm/reset when the trigger returns to or below it (0 = only at
+                    // full release, finger off = click-free; the game re-arms on release).
+                    ce_active_r2 = true;
+                    const uint8_t rearm_pos = zpos(cfg.ce_r2_thresh);
+                    const uint8_t *seq = run_sequencer(cfg.ce_r2_states, cfg.ce_r2_dt,
+                                                       cfg.ce_r2_state_count, g_r2_pos,
+                                                       rearm_pos, ce_seq_stage_r2,
+                                                       ce_rearm_pulse_r2);
+                    if (seq) {
+                        ce_seq_r2 = seq;
+                    } else if (cfg.ce_r2_state_count < 2 &&
+                               (cfg.ce_r2_states[0][0] == 0x25 || cfg.ce_r2_states[0][0] == 0x23)) {
+                        // Single wall: break-through at its END zone; re-arm with a fresh
+                        // identical send when the trigger returns to the re-arm zone.
+                        uint8_t zlo0, zhi0;
+                        wall_zones(cfg.ce_r2_states[0], zlo0, zhi0); (void)zlo0;
+                        if (g_r2_pos >= zpos(zhi0)) ce_broke_r2 = true;
+                        if (ce_broke_r2 && g_r2_pos <= rearm_pos) {
+                            ce_rearm_pulse_r2 = true;
+                            ce_broke_r2 = false;
+                        }
+                    }
+                } else if (cfg.ce_r2_condition == 1) {       // on press (rising cross)
+                    if (past && !was_past) ce_oneshot_r2_until = now_ms + 250;
+                    if (now_ms < ce_oneshot_r2_until) ce_active_r2 = true;
+                } else {                                     // on release (falling cross)
+                    if (!past && was_past) ce_oneshot_r2_until = now_ms + 250;
+                    if (now_ms < ce_oneshot_r2_until) ce_active_r2 = true;
+                }
+                if (ce_active_r2)
+                    ce_write_r2 = pick_state(cfg.ce_r2_states, cfg.ce_r2_dt,
+                                             cfg.ce_r2_state_count, cfg.ce_r2_rate,
+                                             ce_phase_r2, ce_tl_idx_r2, ce_tl_next_r2);
+                if (ce_seq_r2) ce_write_r2 = ce_seq_r2;   // sequencer overrides the picker
+            }
+            if (!ce_active_r2) { ce_tl_next_r2 = 0; ce_tl_idx_r2 = 0; }
+            ce_last_r2_pos = g_r2_pos;
+            // L2
+            if (cfg.ce_l2_enable && !game_owns_l2) {
+                const uint8_t thr = zpos(cfg.ce_l2_thresh);
+                const bool past = g_l2_pos >= thr;
+                const bool was_past = ce_last_l2_pos >= thr;
+                if (cfg.ce_l2_condition == 0) {              // while held / always-armed
+                    ce_active_l2 = true;                     // (see R2 note; thresh = re-arm zone)
+                    const uint8_t rearm_pos = zpos(cfg.ce_l2_thresh);
+                    const uint8_t *seq = run_sequencer(cfg.ce_l2_states, cfg.ce_l2_dt,
+                                                       cfg.ce_l2_state_count, g_l2_pos,
+                                                       rearm_pos, ce_seq_stage_l2,
+                                                       ce_rearm_pulse_l2);
+                    if (seq) {
+                        ce_seq_l2 = seq;
+                    } else if (cfg.ce_l2_state_count < 2 &&
+                               (cfg.ce_l2_states[0][0] == 0x25 || cfg.ce_l2_states[0][0] == 0x23)) {
+                        uint8_t zlo0, zhi0;
+                        wall_zones(cfg.ce_l2_states[0], zlo0, zhi0); (void)zlo0;
+                        if (g_l2_pos >= zpos(zhi0)) ce_broke_l2 = true;
+                        if (ce_broke_l2 && g_l2_pos <= rearm_pos) { ce_rearm_pulse_l2 = true; ce_broke_l2 = false; }
+                    }
+                } else if (cfg.ce_l2_condition == 1) {
+                    if (past && !was_past) ce_oneshot_l2_until = now_ms + 250;
+                    if (now_ms < ce_oneshot_l2_until) ce_active_l2 = true;
+                } else {
+                    if (!past && was_past) ce_oneshot_l2_until = now_ms + 250;
+                    if (now_ms < ce_oneshot_l2_until) ce_active_l2 = true;
+                }
+                if (ce_active_l2)
+                    ce_write_l2 = pick_state(cfg.ce_l2_states, cfg.ce_l2_dt,
+                                             cfg.ce_l2_state_count, cfg.ce_l2_rate,
+                                             ce_phase_l2, ce_tl_idx_l2, ce_tl_next_l2);
+                if (ce_seq_l2) ce_write_l2 = ce_seq_l2;
+            }
+            if (!ce_active_l2) { ce_tl_next_l2 = 0; ce_tl_idx_l2 = 0; }
+            ce_last_l2_pos = g_l2_pos;
+        }
         // gate_pos = analog arming source (opposite trigger) for mode 1;
         // shoulder = digital arming source (opposite shoulder) for mode 3.
         auto at_engage = [&](uint8_t mode, uint8_t gate_pos, uint8_t shoulder,
@@ -512,6 +785,18 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // Priority mirrors R2: game > resistance/kick (if targeted) > vibration.
         if (game_owns_l2) {
             release_left(true);      // game drives it: drop our claim, keep its effect
+        } else if (ce_active_l2 && ce_write_l2) {
+            // Custom captured effect owns the trigger: write the raw state verbatim.
+            memcpy(state.LeftTriggerFFB, ce_write_l2, 11);
+            if (ce_rearm_pulse_l2) {
+                g_ce_force_send = true;   // fresh identical re-send = gentle re-arm
+                ce_rearm_pulse_l2 = false;
+            }
+            state.AllowLeftTriggerFFB = 1;
+            synth_owned_l2 = true;
+        } else if (cfg.ce_l2_enable) {
+            // Enabled but idle: own the trigger exclusively, don't leak slider/r2t.
+            release_left(false);
         } else if (at_wants_l2) {
             write_at(state.LeftTriggerFFB, cfg.at_l2_strength, cfg.at_l2_start_pos,
                      at_kick_l2_amp3, cfg.at_l2_kick_style, cfg.at_l2_pushback_freq,
@@ -537,6 +822,24 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // rumble normally, R2 stiffens the moment you aim, vibration resumes on release.
         if (game_owns_r2) {
             release_right(true);
+        } else if (ce_active_r2 && ce_write_r2) {
+            memcpy(state.RightTriggerFFB, ce_write_r2, 11);
+            if (ce_rearm_pulse_r2) {
+                // Re-arm: identical bytes, but force the send so the controller
+                // receives a fresh effect write (re-arms the break) with NO Off
+                // drop in between - avoids the click of wall-drop-then-restore.
+                g_ce_force_send = true;
+                ce_rearm_pulse_r2 = false;
+            }
+            state.AllowRightTriggerFFB = 1;
+            synth_owned_r2 = true;
+        } else if (cfg.ce_r2_enable) {
+            // Custom effect is ENABLED but not currently engaged (below threshold /
+            // between presses): it owns this trigger exclusively, so DON'T fall
+            // through to the slider adaptive-trigger (at_wants, incl. its kick/bow)
+            // or r2t - those would leak a wall/bow on the next press before the
+            // custom effect re-engages. Release the trigger to a clean/off state.
+            release_right(false);
         } else if (at_wants_r2) {
             // -- Stage 2: push-back kick (recoil) --
             // A static change in Feedback strength is barely perceptible under a
@@ -609,7 +912,10 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
     );
 
     bool changed = false;
-    if (memcmp(&old_state, &state, 32) != 0) {
+    if (g_ce_force_send) {
+        changed = true;                 // re-arm: send identical bytes fresh
+        g_ce_force_send = false;
+    } else if (memcmp(&old_state, &state, 32) != 0) {
         changed = true;
     } else if (memcmp(reinterpret_cast<const uint8_t *>(&old_state) + 36,
                       reinterpret_cast<const uint8_t *>(&state) + 36,

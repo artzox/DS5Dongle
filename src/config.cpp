@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 16;
+constexpr uint16_t CONFIG_VERSION = 18;
 // btstack's TLV flash bank (BT link keys + this project's pairing blacklist tag)
 // occupies the LAST TWO flash sectors by pico-sdk default
 // (PICO_FLASH_BANK_STORAGE_OFFSET) - and config + profile slots used to sit in
@@ -177,6 +177,18 @@ void config_valid() {
     if (body->at_l2_deadzone > 9) body->at_l2_deadzone = 0;
     if (body->mix_native_level > 100) body->mix_native_level = 100; // 0 is valid (mute passthrough)
     if (body->effect_leak_max_burst > 100) body->effect_leak_max_burst = 0; // 0=off; covers fresh-flash 0xFF
+    // Custom captured-effect action (v1.14.0): validate scalar controls; state
+    // bytes are raw (any value valid). Fresh-flash 0xFF -> safe defaults.
+    if (body->ce_r2_enable > 1) body->ce_r2_enable = 0;
+    if (body->ce_r2_condition > 2) body->ce_r2_condition = 0;
+    if (body->ce_r2_thresh > 9) body->ce_r2_thresh = 0; // default: re-arm only at full release
+    if (body->ce_r2_rate < 1 || body->ce_r2_rate > 100) body->ce_r2_rate = 40;
+    if (body->ce_r2_state_count > 5) body->ce_r2_state_count = 0;
+    if (body->ce_l2_enable > 1) body->ce_l2_enable = 0;
+    if (body->ce_l2_condition > 2) body->ce_l2_condition = 0;
+    if (body->ce_l2_thresh > 9) body->ce_l2_thresh = 0;
+    if (body->ce_l2_rate < 1 || body->ce_l2_rate > 100) body->ce_l2_rate = 40;
+    if (body->ce_l2_state_count > 5) body->ce_l2_state_count = 0;
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength

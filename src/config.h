@@ -142,6 +142,37 @@ struct __attribute__((packed)) Config_body {
     // sustained sound = one short accent, not a stream. Turns the leak into a
     // percussion layer that punctuates instead of duplicating.
     uint8_t  effect_leak_max_burst; // x5 ms, 0=off, e.g. 30 = 150 ms bursts
+    // Custom captured-effect action (v1.14.0): plays raw 11-byte trigger effects
+    // captured from a game, with NO fidelity loss (stored verbatim, not decoded
+    // into sliders - the game's force curves don't round-trip through our fields).
+    // An "action" is up to 2 effect STATES (A and B) that the firmware cycles
+    // while the trigger is engaged - reproducing how games deliver adaptive-trigger
+    // effects (a rapid A<->B alternation, each state's trigger position encoded in
+    // its own bytes 1-2). Independent per trigger. When enabled it takes priority
+    // on that trigger and bypasses the sliders. condition: 0=while-held, 1=on-press
+    // (fire once crossing threshold upward), 2=on-release (fire once crossing down).
+    // rate: A<->B toggle rate for 2-state actions (mainly vibration). thresh: the
+    // trigger zone gate (dead-zone-compatible). state_count: 1 or 2.
+    uint8_t  ce_r2_enable;        // 0=off, 1=on
+    uint8_t  ce_r2_condition;     // 0=hold, 1=press, 2=release
+    uint8_t  ce_r2_thresh;        // trigger zone 0-9 gate
+    uint8_t  ce_r2_rate;          // A<->B toggle rate [1-100]
+    uint8_t  ce_r2_state_count;   // 0..5 states in the action
+    // Up to 6 raw captured states + per-state duration. TWO replay modes:
+    //  - dt all zero (assigned from the history monitor): rate-based A<->B cycling
+    //    (states[0]/[1]) - the mode that "stacks" mechanical pairs nicely.
+    //  - dt present (assigned from a TIMELINE recording): step the timeline -
+    //    hold each state for its recorded duration, loop. Reproduces asymmetric
+    //    patterns (e.g. GoW switch-then-HOLD) verbatim; no rate dial-in needed.
+    uint8_t  ce_r2_states[5][11]; // raw captured effect states, played verbatim
+    uint16_t ce_r2_dt[5];         // per-state hold duration in ms (0 = rate mode)
+    uint8_t  ce_l2_enable;
+    uint8_t  ce_l2_condition;
+    uint8_t  ce_l2_thresh;
+    uint8_t  ce_l2_rate;
+    uint8_t  ce_l2_state_count;
+    uint8_t  ce_l2_states[5][11];
+    uint16_t ce_l2_dt[5];
 };
 
 struct __attribute__((packed)) Config {
