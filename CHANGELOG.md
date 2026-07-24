@@ -2,7 +2,151 @@
 
 All notable changes to this project are documented here.
 
-## [1.14.0] — 2026-07-23 (update 4)
+## [1.14.8] — 2026-07-24
+
+### Fixed
+- **Removing a custom effect reset the custom-effect-vs-sliders hand-off.** That
+  setting describes how the trigger is shared between the two systems and belongs
+  to the profile, not to the effect, so wiping it meant re-picking it every time an
+  effect was swapped. Remove now clears only the effect itself — the stored states,
+  the enable flag and the state count — and leaves every other setting for that
+  trigger untouched.
+
+## [1.14.7] — 2026-07-24
+
+### Fixed
+- **Every dropdown in the portal stopped working in 1.14.6.** The warning added in
+  that release embedded a JSON array inside the select's onchange attribute; its
+  double quotes closed the attribute, truncating the handler for *all* selects. No
+  dropdown change took effect — which made the custom effect appear to own its
+  trigger permanently (the hand-off setting could not be changed off its default)
+  and stopped the new warning from ever appearing. The handler no longer embeds
+  quoted data.
+- **Builder list could reject a stage the list did not show.** Any full re-render
+  rebuilt the builder card back to its "No stages yet" placeholder while the
+  staged effects still existed in memory, so adding a stage was refused as a
+  duplicate zone against invisible entries. The list is now repopulated after
+  every render, and *Remove effect* also empties the staging list. The duplicate
+  message points at the list and at Clear list.
+
+## [1.14.6] — 2026-07-24
+
+### Added
+- **Bow / snap in the custom effect builder.** A bow builds resistance through the
+  draw and then pushes the trigger back at the end — the one thing resistance and
+  weapon break cannot do. Set a draw start, draw end, draw strength and snap
+  force; the encoding mirrors the firmware's own bow writer, and reproduces real
+  captured bows byte-for-byte. The builder's bow is also freer than the slider
+  bow, which is fixed to a four-zone span and only fires as a kick: here it can
+  take any span and be staged alongside walls, resistances and vibrations.
+- **Warning for gate hand-off combinations that leave one half silent.** Choosing
+  "custom effect while gated" while that trigger's resistance mode is not set to
+  *always on* now shows an inline warning naming the setting to change, since the
+  ungated half would have nothing armed. The same applies to "sliders while gated"
+  with the resistance switched off. Nothing is changed automatically — the
+  resistance mode stays yours to set.
+
+## [1.14.5] — 2026-07-24
+
+### Fixed
+- **Bow / snap effects buzzed continuously when assigned as a set.** Bow (0x22)
+  was classified as neither mechanical nor vibration, so a bow set fell through to
+  the time-based path; with the short durations a capture typically carries, the
+  states were retriggered around twenty times a second, which feels like a
+  constant buzz rather than a bow. Bow is a force effect and now sits with
+  resistance and weapon-break: placed by trigger position, recorded durations
+  ignored. (This only became visible in 1.14.4 — before the assignment fix, state
+  count was never written to the device, so only the first state ever played.)
+
+## [1.14.4] — 2026-07-24
+
+### Fixed
+- **"Custom effect while gated, sliders otherwise" produced silence on the slider
+  half.** The hand-off used the slider path's *engagement* as its gate, but with a
+  gated resistance mode the gate being open also means the sliders are disengaged
+  — so yielding to them gave nothing. The gate now reads the physical gate input
+  (the opposite trigger past its threshold, or the shoulder button), with its own
+  hysteresis, so both directions work. Pair *custom while gated* with an
+  always-on resistance mode to cover the ungated half.
+
+### Added
+- **Remove effect from R2 / L2** in the Build a Custom Effect panel: wipes that
+  trigger's stored states, turns the custom effect off and hands the trigger back
+  to the sliders, with a device read-back to confirm. Previously an assigned
+  effect could only be overwritten, never cleared.
+
+## [1.14.3] — 2026-07-24
+
+### Fixed
+- **Wake-on-PS reliability regression introduced in 1.14.x.** The trigger
+  synthesis tick was raised from 50 ms to 8 ms so custom-effect stages could
+  track trigger position, and a custom vibration re-sends itself every 25 ms to
+  stay alive. Neither was gated on host state, so with a custom effect enabled
+  the bridge kept composing and pushing reports to the controller while the PC
+  was asleep — competing with the input reports wake-on-PS has to observe.
+  Trigger synthesis now stands down completely while the host is suspended and
+  resumes on wake. Wake's own logic is unchanged from 1.13.3.
+
+## [1.14.2] — 2026-07-24
+
+### Added
+- **Gate hand-off between a custom effect and the trigger sliders**, per trigger.
+  A custom effect no longer has to own its trigger outright: it can share with the
+  synthesized slider effect, using that trigger's existing resistance mode as the
+  gate (L2-gated, L1-gated), so the threshold and hysteresis already configured
+  apply unchanged. Three settings per trigger: custom effect always owns it
+  (default, unchanged behaviour); sliders while gated and custom effect otherwise;
+  or the inverse. With R2 resistance set to L2-gated this gives hip-fire on the
+  captured effect and aim-down-sights on the synthesized resistance, or the
+  reverse. Only one effect plays at a time — this is a switch, not a layer.
+  Existing profiles are unaffected: the setting defaults to the previous
+  behaviour, and the whole path is skipped when no custom effect is enabled.
+
+## [1.14.1] — 2026-07-24
+
+### Fixed
+- **Custom-effect assignment never wrote its settings to the device.** The portal
+  sent enable / condition / zone / state count as bare command IDs instead of
+  wrapping them as config-field writes, so the firmware silently ignored them.
+  Only the raw effect states were stored, leaving state count at its previous
+  value — so a multi-stage effect played only its first state, and behaviour
+  appeared to depend on unrelated manual settings changes. All assignment paths
+  (monitor, timeline, file load, builder) now write fields correctly, and the
+  builder reads the values back from the device and reports a mismatch instead of
+  failing silently.
+- Sequencer stage reset ran after the stage advance and used the raw re-arm zone,
+  which for any zone above 0 sits inside the sequence — undoing each advance in
+  the same evaluation. The reset now runs first and is clamped to below the whole
+  sequence, so later stages are reachable whatever the zone is set to.
+
+### Documentation
+- README explains how the trigger sliders and custom captured effects differ in
+  principle (a live synthesiser driven by rumble and audio, versus a player of
+  fixed states driven by trigger position), and documents the three replay
+  behaviours: single state, mechanical position sequence, and time-based
+  vibration.
+
+## [1.14.1] — 2026-07-23 (update 5)
+
+### Added
+- **Build a Custom Effect** — author effect stages by hand in the portal, no game
+  capture required. Pick a type (weapon break / resistance / vibration), a start
+  zone, a break-or-end zone and a strength, add up to 5 stages, and assign them to
+  a trigger. The encoding mirrors the firmware's own effect writers, so a built
+  stage is byte-identical to what the sliders or a game would emit for the same
+  values — e.g. "weapon break, start zone 2, break zone 5, 100%" reproduces
+  *Ratchet & Clank*'s first wall exactly. Stages can be saved to the same JSON
+  files as captured effects, so built and captured effects interoperate.
+  This gives multi-stage pulls (two walls, wall + end-resistance) that the single
+  trigger-effect sliders cannot express.
+- **Vibration can now be a stage in a positional sequence.** A set that mixes at
+  least one mechanical stage with a vibration is sequenced by position — e.g. wall
+  → wall → buzz while held deep. The vibration takes over at its own depth rather
+  than layering (the controller plays one trigger effect at a time). Sets that are
+  *entirely* vibration keep the time-based behaviour (A<->B rate blend, or a
+  recorded timeline).
+
+## [1.14.1] — 2026-07-23 (update 4)
 
 ### Fixed
 - **Mechanical states no longer fall into timeline replay.** Loading a saved file
@@ -16,7 +160,7 @@ All notable changes to this project are documented here.
   states, where the rhythm is the effect. Existing loaded profiles are fixed by
   the firmware change alone - no re-loading needed.
 
-## [1.14.0] — 2026-07-23 (update 3)
+## [1.14.1] — 2026-07-23 (update 3)
 
 ### Changed
 - **The positional sequencer now accepts resistance stages** (up to 5 mechanical
@@ -29,7 +173,7 @@ All notable changes to this project are documented here.
   POSITIONALLY instead of the rate-blend. The rate-based A<->B blend remains for
   vibration pairs only. Monitor multi-select cap raised from 2 to 5.
 
-## [1.14.0] — 2026-07-23 (update 2)
+## [1.14.1] — 2026-07-23 (update 2)
 
 ### Added
 - **Two-wall sequencer** for custom effects (Ratchet & Clank-style hold model):
@@ -47,7 +191,7 @@ All notable changes to this project are documented here.
   against, click-free, matching how the game re-arms on release). Higher values
   re-arm earlier at the cost of possible arming feel under a hovering finger.
 
-## [1.14.0] — 2026-07-23 (update)
+## [1.14.1] — 2026-07-23 (update)
 
 ### Added
 - **Timeline capture** for custom effects: Record captures the effect's real
@@ -65,7 +209,7 @@ All notable changes to this project are documented here.
   wall's own start zone, the break re-arms without the wall-drop-then-restore
   that caused an audible/palpable click on the next press.
 
-## [1.14.0] — 2026-07-22
+## [1.14.1] — 2026-07-22
 
 ### Added
 - **Custom Captured Effects** — capture a real adaptive-trigger effect from a game

@@ -164,6 +164,7 @@ const SECTIONS = [
     [0x59,'ce_r2_thresh','u8','Custom effect zone — press/release: engage point; while-held walls: RE-ARM zone (wall resets when trigger returns below this; 0 = only at full release, click-free)','number',[0,9]],
     [0x5a,'ce_r2_rate','u8','Custom effect A↔B toggle rate (only for 2-state vibration actions)','number',[1,100]],
     [0x5b,'ce_r2_state_count','u8','Custom effect state count (auto-set by Assign / file load)','number',[1,5]],
+    [0x61,'ce_r2_yield','u8','Custom effect vs sliders on R2 (gate = L2 past its threshold, or L1 if the mode is shoulder-gated; the slider side needs a resistance mode armed in the half it covers)','select',{0:'Custom effect always owns R2',1:'Sliders while gated, custom effect otherwise',2:'Custom effect while gated, sliders otherwise'}],
   ]},
   { title: 'Adaptive Triggers — L2 (left trigger)', fields: [
     [0x42,'at_l2_mode','u8','Mode','select',[[0,'Off'],[2,'Always on'],[1,'Gated by R2 (fire trigger)'],[3,'Gated by R1 (shoulder)']]],
@@ -182,6 +183,7 @@ const SECTIONS = [
     [0x5e,'ce_l2_thresh','u8','Custom effect zone — press/release: engage point; while-held walls: RE-ARM zone (wall resets when trigger returns below this; 0 = only at full release, click-free)','number',[0,9]],
     [0x5f,'ce_l2_rate','u8','Custom effect A↔B toggle rate (only for 2-state vibration actions)','number',[1,100]],
     [0x60,'ce_l2_state_count','u8','Custom effect state count (auto-set by Assign / file load)','number',[1,5]],
+    [0x62,'ce_l2_yield','u8','Custom effect vs sliders on L2 (gate = R2 past its threshold, or R1 if the mode is shoulder-gated; the slider side needs a resistance mode armed in the half it covers)','select',{0:'Custom effect always owns L2',1:'Sliders while gated, custom effect otherwise',2:'Custom effect while gated, sliders otherwise'}],
   ]},
   { title: 'Gyro Aiming', fields: [
     [0x2f,'gyro_mode','u8','Mode','select',[[0,'Off'],[2,'Always on'],[1,'Only while L2 (aim) held'],[5,'Only while R2 (fire) held'],[6,'Only while L1 held'],[7,'Only while R1 held'],[3,'Only while touchpad touched'],[4,'Always on — touch touchpad to pause (ratchet)']]],
@@ -584,7 +586,7 @@ async function slotReadField(slot, fdef){ // fdef = [fid,key,type]
   return decField(fdef[2], Array.from(r.slice(5, 5 + sz)));
 }
 
-// ===== Trigger Effect Monitor + Custom Captured Effects (v1.14.0) =====
+// ===== Trigger Effect Monitor + Custom Captured Effects (v1.14.8) =====
 function effectTypeName(t){
   switch(t){
     case 0x00: return 'None';   case 0x05: return 'Off';
@@ -667,8 +669,8 @@ async function assignCustom(trig){
       }
       // set scalar controls: enable=1, state_count, default condition=hold, thresh=1, rate=40
       const base = trig === 0 ? 0x57 : 0x5c;
-      await sendCmd(base + 0, [1]);              // enable
-      await sendCmd(base + 4, [picks.length]);   // state_count
+      await sendCmd(0x01, [base + 0, 1]);              // enable (field write = cmd 0x01 + id)
+      await sendCmd(0x01, [base + 4, picks.length]);   // state_count
     });
     // reflect in the editor: set config values + mark dirty, then re-render
     const pfx = trig === 0 ? 'ce_r2' : 'ce_l2';
@@ -697,7 +699,7 @@ function saveCustomFile(trig){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
 }
-// ===== Timeline capture (v1.14.0): record the real rhythm, replay verbatim =====
+// ===== Timeline capture (v1.14.8): record the real rhythm, replay verbatim =====
 async function tlSetArmed(on){
   await sendCmd(0x13, [on ? 1 : 0]);
   const r = await readCmdReplyOn(SLOT_REPORT, 0x13, undefined, 12);
@@ -771,14 +773,14 @@ async function tlAssign(trig){
     await hidLocked(async () => {
       for (let i = 0; i < picks.length; i++){
         const t = picks[i].bytes[0];
-        const mech = (t===0x21||t===0x01||t===0x25||t===0x23);
+        const mech = (t===0x21||t===0x01||t===0x25||t===0x23||t===0x22||t===0x02); // bow is a force effect too
         const dt = mech ? 0 : Math.min(65535, picks[i].dt|0);
         await sendCmd(0x11, [trig, i, ...picks[i].bytes, dt & 0xFF, (dt >> 8) & 0xFF]);
         await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
       }
       const base = trig === 0 ? 0x57 : 0x5c;
-      await sendCmd(base + 0, [1]);              // enable
-      await sendCmd(base + 4, [picks.length]);   // state_count
+      await sendCmd(0x01, [base + 0, 1]);              // enable (field write = cmd 0x01 + id)
+      await sendCmd(0x01, [base + 4, picks.length]);   // state_count
     });
     const pfx2 = trig===0?'ce_r2':'ce_l2';
     config[pfx2 + '_enable'] = 1;
@@ -801,6 +803,213 @@ function tlSaveFile(trig){
   setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
 }
 
+// ===== Manual effect builder — author stages by hand, no capture needed =====
+// Encoding mirrors the firmware's own writers exactly, so a hand-built stage is
+// byte-identical to what the sliders (or a game) would emit for the same values.
+window._cebStages = [];
+function cebWire100(s){ const w = Math.floor((s * 7 + 50) / 100); return w > 7 ? 7 : (w < 0 ? 0 : w); }
+function cebPackZones(b, zones, val3){
+  let bits = 0;
+  for (let z = 0; z <= 9; z++) if (zones & (1 << z)) bits |= (val3 & 7) << (3 * z);
+  b[3] = bits & 0xFF; b[4] = (bits >>> 8) & 0xFF; b[5] = (bits >>> 16) & 0xFF; b[6] = (bits >>> 24) & 0xFF;
+}
+function cebBuildBytes(st){
+  const b = new Array(11).fill(0);
+  const s = Math.max(0, Math.min(9, st.start | 0));
+  const e = Math.max(0, Math.min(9, st.end | 0));
+  if (st.type === 'break'){
+    let ws = Math.max(2, Math.min(7, s));
+    let we = Math.min(8, Math.max(ws + 1, e));
+    const zp = (1 << ws) | (1 << we);
+    b[0] = 0x25; b[1] = zp & 0xFF; b[2] = (zp >>> 8) & 0xFF; b[3] = cebWire100(st.strength);
+  } else if (st.type === 'bow'){
+    // Bow/snap: zone pair in bytes 1-2, byte 3 packs draw strength and snap force
+    // (both 1-8, sent as value-1). The snap presses the trigger BACK against the
+    // finger at the end of the draw - the one thing resistance and weapon break
+    // can't do. Same layout the firmware's own bow writer uses.
+    let bs = Math.max(0, Math.min(7, s));
+    let be = Math.min(8, Math.max(bs + 1, e));
+    const zb = (1 << bs) | (1 << be);
+    b[0] = 0x22; b[1] = zb & 0xFF; b[2] = (zb >>> 8) & 0xFF;
+    b[3] = (cebWire100(st.strength) & 0x07) | ((cebWire100(st.snap) & 0x07) << 3);
+  } else {
+    const lo = Math.min(s, e), hi = Math.max(s, e);
+    let zones = 0;
+    for (let z = lo; z <= hi; z++) zones |= (1 << z);
+    b[0] = (st.type === 'vibration') ? 0x26 : 0x21;
+    b[1] = zones & 0xFF; b[2] = (zones >>> 8) & 0x03;
+    cebPackZones(b, zones, cebWire100(st.strength));
+    if (st.type === 'vibration') b[9] = Math.max(1, Math.min(255, st.freq | 0));
+  }
+  return b;
+}
+function cebZonesOf(b){ // the zones actually encoded (after clamping)
+  const zb = b[1] | ((b[2] & 0x03) << 8);
+  const out = [];
+  for (let z = 0; z < 10; z++) if (zb & (1 << z)) out.push(z);
+  return out;
+}
+function cebStartZone(b){ // lowest set zone, matching the firmware's ordering
+  const zb = b[1] | ((b[2] & 0x03) << 8);
+  for (let z = 0; z < 10; z++) if (zb & (1 << z)) return z;
+  return 0;
+}
+function cebTypeChanged(){
+  const t = document.getElementById('ceb_type').value;
+  document.getElementById('ceb_endlbl').firstChild.textContent =
+    (t === 'break') ? 'Break zone ' : (t === 'bow') ? 'Draw end zone ' : 'End zone ';
+  document.getElementById('ceb_freqlbl').style.display = (t === 'vibration') ? '' : 'none';
+  document.getElementById('ceb_snaplbl').style.display = (t === 'bow') ? '' : 'none';
+  document.getElementById('ceb_strlbl').firstChild.textContent =
+    (t === 'bow') ? 'Draw strength % ' : 'Strength % ';
+}
+function cebAddStage(){
+  if (window._cebStages.length >= 5){ alert('5 stages maximum.'); return; }
+  const st = {
+    type: document.getElementById('ceb_type').value,
+    start: +document.getElementById('ceb_start').value,
+    end: +document.getElementById('ceb_end').value,
+    strength: +document.getElementById('ceb_str').value,
+    freq: +document.getElementById('ceb_freq').value,
+    snap: +document.getElementById('ceb_snap').value
+  };
+  st.bytes = cebBuildBytes(st);
+  const z = cebStartZone(st.bytes);
+  if (window._cebStages.some(o => cebStartZone(o.bytes) === z)){
+    alert('A stage in the list below already starts at zone ' + z + '.\n\nStages are ordered by their start zone, so each needs a different one. Use ✕ to drop that stage, or "Clear list" to start over.');
+    return;
+  }
+  window._cebStages.push(st);
+  cebRender();
+}
+function cebRemove(i){ window._cebStages.splice(i, 1); cebRender(); }
+function cebClear(){ window._cebStages = []; cebRender(); }
+function cebRender(){
+  const box = document.getElementById('ceb_list');
+  if (!box) return;
+  const list = window._cebStages;
+  if (!list.length){ box.innerHTML = 'No stages yet.'; return; }
+  const sorted = list.map((st, i) => ({ st, i })).sort((a, b) => cebStartZone(a.st.bytes) - cebStartZone(b.st.bytes));
+  let html = '<div style="color:var(--sub);font-size:11px;margin-bottom:2px">Played in this order as you pull:</div>';
+  const warn = [];
+  sorted.forEach(({ st, i }, n) => {
+    const hex = st.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const zones = cebZonesOf(st.bytes);           // ACTUAL encoded zones, after clamping
+    const zs = zones.length ? zones[0] : 0;
+    const ze = zones.length ? zones[zones.length - 1] : 0;
+    const nm = effectTypeName(st.bytes[0]);
+    const at = Math.round(zs * 25.5);
+    const det = (st.type === 'break') ? `wall ${zs}→${ze}` :
+                (st.type === 'bow') ? `draw ${zs}→${ze}, snap ${st.snap}%` :
+                (st.type === 'vibration') ? `zones ${zs}–${ze}, freq ${st.freq}` :
+                `zones ${zs}–${ze}`;
+    // did the hardware limits change what was asked for?
+    const askLo = Math.min(st.start, st.end), askHi = Math.max(st.start, st.end);
+    const clamped = (st.type === 'break' || st.type === 'bow') && (zs !== askLo || ze !== askHi);
+    // how wide is this stage's felt window?
+    const nextZ = (n + 1 < sorted.length) ? cebStartZone(sorted[n + 1].st.bytes) : 10;
+    const from = (n === 0) ? 0 : Math.max(0, Math.round(zs * 25.5) - 12);
+    const to = (n + 1 < sorted.length) ? Math.max(0, Math.round(nextZ * 25.5) - 12) : 255;
+    if (to - from < 40) warn.push(`stage ${n + 1} (${nm}) is only active over ~${to - from} of 255 counts — a normal pull can skip straight past it. Space the stages further apart.`);
+    if (n === 0 && (st.bytes[0] === 0x26 || st.bytes[0] === 0x06 || st.bytes[0] === 0x27))
+      warn.push('the first stage is a Vibration — it is armed at rest and a vibration ignores trigger position, so it will buzz continuously. Put the vibration on a later (deeper) stage.');
+    html += `<div style="display:flex;gap:8px;align-items:center;margin:2px 0">
+      <span style="min-width:14px;color:var(--sub)">${n + 1}.</span>
+      <span style="min-width:210px"><b>${nm}</b> — ${det}, ${st.strength}% <span style="color:var(--sub)">(pos ${from}–${to}${clamped ? ', clamped by hw' : ''})</span></span>
+      <code style="color:var(--sub);font-size:11px">${hex}</code>
+      <button class="btn btn-outline" style="padding:0 6px" onclick="cebRemove(${i})">✕</button></div>`;
+  });
+  if (warn.length) html += '<div style="font-size:11px;color:#e0a030;margin-top:4px">⚠ ' + warn.join('<br>⚠ ') + '</div>';
+  box.innerHTML = html;
+}
+async function cebAssign(trig){
+  const list = window._cebStages;
+  if (!list.length){ alert('Add at least one stage first.'); return; }
+  const sorted = list.slice().sort((a, b) => cebStartZone(a.bytes) - cebStartZone(b.bytes));
+  const base = trig === 0 ? 0x57 : 0x5c;   // used by the writes AND the read-back below
+  try {
+    await hidLocked(async () => {
+      for (let i = 0; i < sorted.length; i++){
+        await sendCmd(0x11, [trig, i, ...sorted[i].bytes, 0, 0]); // dt 0 = positional
+        await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
+      }
+      // Field writes MUST be wrapped as command 0x01 + field id — a bare
+      // sendCmd(fieldId) is an unknown top-level command and is silently
+      // ignored by the firmware (the bug that made every Assign unreliable).
+      await sendCmd(0x01, [base + 0, 1]);              // enable
+      await sendCmd(0x01, [base + 1, 0]);              // condition = While held
+      await sendCmd(0x01, [base + 2, 0]);              // zone 0 = reset on full release
+      await sendCmd(0x01, [base + 4, sorted.length]);  // state count
+    });
+    // Read back from the DEVICE and verify — never trust a silent write again.
+    const vEnable = await hidLocked(() => readField(base + 0, 'u8'));
+    const vCount  = await hidLocked(() => readField(base + 4, 'u8'));
+    if (vEnable !== 1 || vCount !== sorted.length){
+      alert(`VERIFY FAILED — device reports enable=${vEnable}, state count=${vCount} (expected 1 and ${sorted.length}). The effect will not play correctly; try Assign again.`);
+      return;
+    }
+    const pfx = trig === 0 ? 'ce_r2' : 'ce_l2';
+    config[pfx + '_enable'] = 1;
+    config[pfx + '_condition'] = 0;
+    config[pfx + '_thresh'] = 0;
+    config[pfx + '_state_count'] = sorted.length;
+    (window._dirty = window._dirty || {})[pfx + '_enable'] = 1;
+    window._dirty[pfx + '_state_count'] = 1;
+    render(); cebRender();
+    alert(`Built ${sorted.length}-stage effect assigned to ${trig === 0 ? 'R2' : 'L2'} (condition While held, zone 0 set for you). Save to a slot to keep it.`);
+  } catch(e){ alert('Assign failed: ' + (e && e.message ? e.message : e)); }
+}
+async function ceClearDevice(trig){
+  const name = trig === 0 ? 'R2' : 'L2';
+  if (!confirm(`Remove the custom effect from ${name}?\n\nThis wipes its stored states on the device and returns ${name} to the trigger sliders. Your other ${name} settings, including the custom-effect-vs-sliders hand-off, are left alone. Save to a slot afterwards to make it permanent for that profile.`)) return;
+  const base = trig === 0 ? 0x57 : 0x5c;
+  // NOTE: deliberately does NOT touch ce_*_yield (the custom-effect-vs-sliders
+  // hand-off). That is a profile preference about how the trigger is shared, not
+  // part of the effect payload - resetting it meant re-picking it every time an
+  // effect was swapped.
+  try {
+    await hidLocked(async () => {
+      const zeros = new Array(11).fill(0);
+      for (let i = 0; i < 5; i++){                       // wipe all stored states
+        await sendCmd(0x11, [trig, i, ...zeros, 0, 0]);
+        await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
+      }
+      await sendCmd(0x01, [base + 0, 0]);                // enable off
+      await sendCmd(0x01, [base + 4, 0]);                // state count 0
+    });
+    const vEnable = await hidLocked(() => readField(base + 0, 'u8'));
+    const vCount  = await hidLocked(() => readField(base + 4, 'u8'));
+    if (vEnable !== 0 || vCount !== 0){
+      alert(`VERIFY FAILED — device still reports enable=${vEnable}, state count=${vCount}. Try again.`);
+      return;
+    }
+    window._cebStages = [];              // removing the effect starts the builder fresh
+    const pfx = trig === 0 ? 'ce_r2' : 'ce_l2';
+    config[pfx + '_enable'] = 0;
+    config[pfx + '_state_count'] = 0;
+    (window._dirty = window._dirty || {})[pfx + '_enable'] = 1;
+    window._dirty[pfx + '_state_count'] = 1;
+    render();
+    alert(`${name} cleared — the trigger is back on its slider settings. Save to a slot to keep it that way.`);
+  } catch(e){ alert('Clear failed: ' + (e && e.message ? e.message : e)); }
+}
+
+function cebSaveFile(){
+  const list = window._cebStages;
+  if (!list.length){ alert('Add at least one stage first.'); return; }
+  const sorted = list.slice().sort((a, b) => cebStartZone(a.bytes) - cebStartZone(b.bytes));
+  const dump = { format: 'ds5dongle-custom-effect', version: 2, source: 'built',
+    state_count: sorted.length,
+    states: sorted.map(st => ({ type: '0x' + st.bytes[0].toString(16).padStart(2, '0'),
+      name: effectTypeName(st.bytes[0]), bytes: st.bytes, duration_ms: 0 })) };
+  const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ds5-built-effect-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
 // Load a custom-effect file and write it to a trigger.
 async function loadCustomFile(event, trig){
   const file = event.target.files[0]; if (!file) return;
@@ -813,15 +1022,15 @@ async function loadCustomFile(event, trig){
       for (let s = 0; s < n; s++){
         const st = data.states[s];
         const t = st.bytes[0];
-        const mech = (t===0x21||t===0x01||t===0x25||t===0x23);
+        const mech = (t===0x21||t===0x01||t===0x25||t===0x23||t===0x22||t===0x02); // bow is a force effect too
         // mechanical states never timeline-play - durations are game-state timing
         const dt = mech ? 0 : Math.min(65535, (st.duration_ms|0) || 0);
         await sendCmd(0x11, [trig, s, ...st.bytes, dt & 0xFF, (dt >> 8) & 0xFF]);
         await readCmdReplyOn(SLOT_REPORT, 0x11, undefined, 12);
       }
       const base = trig === 0 ? 0x57 : 0x5c;
-      await sendCmd(base + 0, [1]);
-      await sendCmd(base + 4, [n]);
+      await sendCmd(0x01, [base + 0, 1]);   // field write = cmd 0x01 + id
+      await sendCmd(0x01, [base + 4, n]);
     });
     const pfx = trig === 0 ? 'ce_r2' : 'ce_l2';
     config[pfx + '_enable'] = 1;
@@ -1185,10 +1394,29 @@ async function refreshDiag(){
 }
 setInterval(()=>{ if(!saving && !slotsBusy && device && device.opened && document.getElementById('diagbox')) hidLocked(refreshDiag); }, 1000);
 
+// A gate hand-off is only useful if BOTH halves have something armed. The custom
+// side always does; the slider side only plays where its resistance mode is armed.
+// Rather than silently rewriting a resistance mode the user chose, flag the
+// combination and name the setting to change.
+function ceGateWarning(key){
+  const isR2 = key === 'ce_r2_yield';
+  const y = +config[isR2 ? 'ce_r2_yield' : 'ce_l2_yield'] || 0;
+  const en = +config[isR2 ? 'ce_r2_enable' : 'ce_l2_enable'] || 0;
+  if (!en || !y) return '';
+  const mode = +config[isR2 ? 'at_mode' : 'at_l2_mode'] || 0;
+  const T = isR2 ? 'R2' : 'L2';
+  const resLabel = `${T} resistance mode`;
+  if (y === 2 && mode !== 2)
+    return `Set <b>${resLabel}</b> to <b>always on</b>, or the ungated half is silent: the custom effect covers ${T} while the gate is held, and nothing is armed to cover it the rest of the time.`;
+  if (y === 1 && mode === 0)
+    return `<b>${resLabel}</b> is off, so the gated half is silent — the custom effect covers ${T} while the gate is open, but there is no slider effect to hand over to while it is held.`;
+  return '';
+}
+
 function render(){
   const app=document.getElementById('app');
   const on = device && device.opened;
-  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.14.0</span></h1>
+  let html = `<h1>DS5 Bridge Config <span style="font-size:13px;color:var(--sub)">v1.14.8</span></h1>
     <p class="subtitle">awalol RAM base — field-ID protocol</p>
     <div class="status-bar"><div class="dot ${on?'on':''}"></div>
       <span style="flex:1">${on?`Connected — ${device.productId===DSE_PID?'DualSense Edge':'DualSense'}${fwVer?` · FW v${fwVer.maj}.${fwVer.min}.${fwVer.pat} · config v${fwVer.cfgv}`:` · FW: pre-1.0.5 (no version fields)`}`:'Not connected'}</span>
@@ -1207,7 +1435,11 @@ function render(){
           <option value="0" ${config[key]==0?'selected':''}>No</option>
           <option value="1" ${config[key]==1?'selected':''}>Yes</option></select>`;
       } else if(kind==='select'){
-        html += `<select onchange="config['${key}']=+this.value;(window._dirty=window._dirty||{})['${key}']=1">`;
+        // NOTE: never embed a JSON array here - its double quotes close the
+        // onchange attribute and silently break EVERY select in the portal.
+        // Decide re-render here, emit only a bare call.
+        const reRender = ['ce_r2_yield','ce_l2_yield','at_mode','at_l2_mode','ce_r2_enable','ce_l2_enable'].includes(key);
+        html += `<select onchange="config['${key}']=+this.value;(window._dirty=window._dirty||{})['${key}']=1${reRender?';render()':''}">`;
         { const pairs = Array.isArray(opts) ? opts : Object.entries(opts); for(const [v,lbl] of pairs) html += `<option value="${v}" ${config[key]==v?'selected':''}>${lbl}</option>`; }
         html += `</select>`;
       } else {
@@ -1218,6 +1450,10 @@ function render(){
         html += `<input type="number" min="${min}" max="${max}" step="${step}" value="${shown}" onchange="config['${key}']=${type==='f32'?'parseFloat(this.value)':'+this.value'};(window._dirty=window._dirty||{})['${key}']=1">`;
       }
       html += `</div></div>`;
+      if(key === 'ce_r2_yield' || key === 'ce_l2_yield'){
+        const w = ceGateWarning(key);
+        if(w) html += `<div class="row" style="padding-top:0"><div></div><div style="font-size:11px;color:#e0a030;line-height:1.35">⚠ ${w}</div></div>`;
+      }
     }
     html += `</div>`;
   }
@@ -1248,10 +1484,42 @@ function render(){
       <button class="btn btn-outline" style="padding:2px 10px;margin-top:4px" onclick="tlRecordStop()">Stop &amp; fetch</button>
       <div id="tlbox" style="font-size:13px;margin-top:6px;color:var(--sub)">Not recording.</div>
     </div></div>
+  <div class="card"><div class="card-title">Build a Custom Effect <span style="font-size:11px;color:var(--sub)">(author stages by hand — no game capture needed)</span></div>
+    <div style="font-size:12px;color:var(--sub);margin-bottom:6px">Add up to 5 stages. Mechanical stages (weapon breaks, resistances) are played <b>in sequence as you pull</b>, ordered by their start zone — so two walls at different depths give a genuine two-stage pull, which the trigger sliders can't do. A vibration stage can be mixed in and takes over at its own depth (it replaces the wall there — the controller plays one trigger effect at a time). Each stage needs a <b>different start zone</b>, and stages want <b>room between them</b> — a stage squeezed into one or two zones can be skipped by a normal pull. Zones are 0–9 ≈ 0–100% of the pull. Weapon-break limits: wall start 2–7, break point 3–8. Bow limits: draw start 0–7, draw end 1–8. Values outside those are clamped, and the list shows what was actually encoded. A <b>bow</b> builds resistance through the draw and then <b>pushes the trigger back</b> at the end — the one thing resistance and weapon break can't do. Put any vibration on a <b>later</b> stage — a vibration on the first stage buzzes at rest.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px">
+      <select id="ceb_type" onchange="cebTypeChanged()">
+        <option value="break">Weapon break (wall that gives way)</option>
+        <option value="bow">Bow / snap (draws, then pushes back)</option>
+        <option value="resistance">Resistance</option>
+        <option value="vibration">Vibration</option>
+      </select>
+      <label>Start zone <input type="number" id="ceb_start" min="0" max="9" value="2" style="width:52px"></label>
+      <label id="ceb_endlbl">Break zone <input type="number" id="ceb_end" min="0" max="9" value="5" style="width:52px"></label>
+      <label id="ceb_strlbl">Strength % <input type="number" id="ceb_str" min="0" max="100" value="100" style="width:60px"></label>
+      <label id="ceb_snaplbl" style="display:none">Snap force % <input type="number" id="ceb_snap" min="0" max="100" value="100" style="width:60px"></label>
+      <label id="ceb_freqlbl" style="display:none">Frequency <input type="number" id="ceb_freq" min="1" max="255" value="40" style="width:60px"></label>
+      <button class="btn btn-outline" style="padding:2px 10px" onclick="cebAddStage()">Add stage</button>
+    </div>
+    <div id="ceb_list" style="font-size:12px;margin-top:8px">No stages yet.</div>
+    <div style="margin-top:6px">
+      <button class="btn btn-outline" style="padding:2px 10px" onclick="cebAssign(0)">Assign → R2</button>
+      <button class="btn btn-outline" style="padding:2px 10px" onclick="cebAssign(1)">Assign → L2</button>
+      <button class="btn btn-outline" style="padding:2px 10px" onclick="cebSaveFile()">Save to file</button>
+      <button class="btn btn-outline" style="padding:2px 10px" onclick="cebClear()">Clear list</button>
+    </div>
+    <div style="margin-top:8px;border-top:1px solid var(--line,#333);padding-top:6px">
+      <span style="font-size:12px;color:var(--sub)">Remove the effect currently on a trigger — wipes its stored states and hands the trigger back to the sliders:</span><br>
+      <button class="btn btn-outline" style="padding:2px 10px;margin-top:4px" onclick="ceClearDevice(0)">Remove effect from R2</button>
+      <button class="btn btn-outline" style="padding:2px 10px;margin-top:4px" onclick="ceClearDevice(1)">Remove effect from L2</button>
+    </div></div>
   <div class="card"><div class="card-title">Diagnostic</div>
     <div id="diagbox" style="font-size:12px;color:var(--sub)">Reading live stream…</div></div>`;
   app.innerHTML=html;
   refreshSlots();
+  // render() rebuilds the whole page, so the dynamic panels revert to their
+  // placeholders while their data still exists in memory. Repopulate them, or the
+  // builder shows an empty list yet still rejects a stage as a duplicate zone.
+  try { if (typeof cebRender === 'function') cebRender(); } catch(e){}
 }
 
 render();

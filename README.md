@@ -1,6 +1,6 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
-**Version 1.14.0**
+**Version 1.14.8**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
 (a Raspberry Pi Pico 2W-based wireless DualSense dongle) that adds **audio-derived
@@ -57,7 +57,7 @@ to RAM so native fine haptics and controller audio work without overclocking.
   bursts knock the trigger back against your finger — as a low-frequency vibration
   thump or a mechanical **bow-snap**, selectable per trigger — then resistance
   resumes.
-- **Custom captured effects (new in 1.14.0)** — capture the *actual* adaptive-trigger
+- **Custom captured effects (new in 1.14.8)** — capture the *actual* adaptive-trigger
   effects a game sends (weapon walls, resistances, vibrations) and replay them on
   either trigger in games that have none. Effects are stored as the exact bytes the
   game sent — nothing is decoded into sliders, so the feel is the original one.
@@ -111,7 +111,7 @@ the PC is actually asleep (where wake needs it).
    this will not run on the original Pico W.)* Hold the BOOTSEL button while
    plugging in the Pico 2W
    (or triple-click BOOTSEL on an already-running unit), then copy
-   `ds5-v1.14.0.uf2` to the `RPI-RP2` drive that appears.
+   `ds5-v1.14.8.uf2` to the `RPI-RP2` drive that appears.
    - **First time / after a settings-structure change:** flash `flash_nuke.uf2`
      first to clear old settings, then flash this firmware.
 2. **Open the portal.** **Download** `ds5-config-portal.html` and open the
@@ -323,7 +323,7 @@ on gunfire via the auto-haptics envelope. The diagnostics box shows the live
 ≥ 32, so if the number stays 0 while the game rumbles, the selected source isn't
 producing signal.
 
-### Custom Captured Effects (new in 1.14.0)
+### Custom Captured Effects (new in 1.14.8)
 
 Capture a real adaptive-trigger effect from a game that has one, and replay it on
 any trigger in a game that doesn't. Effects are stored as the exact 11-byte
@@ -357,9 +357,29 @@ sending trigger effects.
 
 Enable and state count are set for you; **state count is never set by hand**.
 
-**2. How assigned effects replay** — the mode is chosen automatically by type:
+**2. How this differs from the trigger sliders above**
 
-- **Mechanical states (Resistance, Weapon break) → positional sequencing.** States
+The two systems work on completely different principles, which is why they are
+mutually exclusive on a trigger:
+
+| | Trigger sliders (Adaptive Triggers) | Custom captured effects |
+|---|---|---|
+| Where the effect comes from | **Synthesised** from your parameters (strength, shape, start position, detent) | **Replayed** from stored raw effect bytes |
+| How many effects | **One**, continuously recomposed | **Up to 5 states**, one active at a time |
+| What changes the feel | Game **rumble** and **audio** (kick, R2T, auto-haptics) plus trigger position | **Trigger position only** |
+| Editable | Yes — every parameter is a slider | No — the bytes are fixed (but you can build new ones) |
+| Multi-stage pulls | Not possible (one effect slot; the detent gives one bump, not a second wall) | Yes — that is the point |
+
+The sliders are a *live synthesiser*: they rebuild one effect every cycle in
+response to what the game is doing, which is why they can react to rumble and
+audio. Custom effects are a *player*: the states are fixed, and the only thing
+that decides which one is active is where your finger is on the trigger. Neither
+can do the other's job — the sliders can't stage two walls in one pull, and a
+captured effect can't respond to a game explosion.
+
+**3. How assigned effects replay** — the mode is chosen automatically by type:
+
+- **Mechanical states (Resistance, Weapon break, Bow/snap) → positional sequencing.** States
   are ordered by the trigger positions encoded in their own bytes and played in
   sequence as you pull, each stage arming just before your finger reaches it. Tick
   order doesn't matter. This reproduces a full action such as *Ratchet & Clank*'s
@@ -367,7 +387,27 @@ Enable and state count are set for you; **state count is never set by hand**.
 - **Vibration states → time-based.** A 2-state pair blends A↔B at the toggle rate;
   a timeline recording (below) replays the recorded rhythm instead.
 
-**3. Timeline recording — for vibration rhythm**
+So there are three distinct replay behaviours, picked for you:
+
+1. **One state** — asserted continuously while the condition holds.
+2. **Mechanical sequence** (2–5 states, at least one force effect — wall,
+   resistance or bow) — ordered
+   by trigger position and stepped through as you pull. Recorded durations are
+   ignored; position is the only clock. A vibration may be mixed in as one of the
+   stages, and it takes over at its own depth.
+3. **Vibration pair or timeline** (all states are vibrations) — driven by *time*,
+   either the A↔B toggle rate or the recorded per-state durations.
+
+> **A multi-stage effect only sequences under the *While held* condition.** Stages
+> are stepped through by trigger position, which needs the effect armed for the
+> whole pull. Set that trigger to *On press* or *On release* and you get a single
+> one-shot of the first stage instead — the later stages simply never play, with
+> no error to tell you why. Assigning from the **builder** therefore sets the
+> condition to *While held* (and the zone to 0) for you; assigning from the
+> monitor, a timeline or a file leaves the condition as you have it, so check it
+> if you are building a sequence that way.
+
+**4. Timeline recording — for vibration rhythm**
 
 The monitor's history carries no timing. When a vibration's character *is* its
 rhythm (switch-then-hold, pulse patterns), use **Timeline recording**: press
@@ -381,15 +421,23 @@ how long you happened to hold it, not part of the effect), so walls and resistan
 always sequence positionally even if you assign them from a timeline or load a file
 that contains durations.
 
-**4. Getting a custom VIBRATION to work**
+**5. Getting a custom VIBRATION to work**
 
 This is where the **trigger condition** matters:
 
+- **The reliable recipe is a one-shot: condition On press or On release, with a
+  zone.** Set the zone to where in the pull you want it — e.g. **zone 9** gives a
+  late-stage kick right at the bottom of the travel, zone 2–3 fires it early. The
+  **zone must not be 0** (see below). In practice this does not feel like a brief
+  blip: once the trigger is past the zone the buzz continues until you physically
+  release it, so "On press + zone 9" gives a **buzz through the deep part of the
+  pull** — which is usually what you want from a captured vibration.
 - **Sustained hold** (e.g. the *God of War Ragnarök* spear): condition **While
-  held**. The effect is asserted continuously and gated by *its own* captured zones
-  — the spear's buzz sits at the deep end of the pull, so it only buzzes when you
-  pull deep. Assign the **sustained state alone**; don't assign the whole timeline,
-  because its long duration is only how long you held the trigger while recording.
+  held**, assigning the sustained state **alone** — don't assign the whole
+  timeline, because its long duration is only how long you held the trigger while
+  recording. Note that a vibration does not keep buzzing from a single command;
+  the firmware re-sends it periodically to sustain it. If a held vibration feels
+  weak or intermittent, use a one-shot condition instead.
 - **Firing kick or release pop**: condition **On press** or **On release**, and the
   **zone must not be 0**. In those modes the zone is the *engage point* and the
   effect fires as a short one-shot when the trigger crosses it — at zone 0 the
@@ -397,23 +445,64 @@ This is where the **trigger condition** matters:
   **nothing will ever fire**. Use zone 1–9 (roughly 10–90% of the pull).
 - A vibration asserted while the trigger is held **at full travel** can buzz
   mechanically (a fully depressed trigger resonates against the controller body).
-  Prefer a one-shot condition, or an effect whose own zones sit deep, over a
-  sustained full-pull buzz.
+  This is another reason to prefer a one-shot condition over a sustained
+  full-pull buzz.
+- A vibration's own zone bytes do **not** restrict where it buzzes — the effect
+  runs whenever it is active, regardless of trigger position. Position control
+  comes from the **zone + condition** settings, or from placing the vibration as a
+  stage in a built multi-stage effect (below).
 
 **Settings (per trigger)**
 
 | Setting | Range | Default | Notes |
 |---|---|---|---|
 | Custom captured effect — enable | Off / On | Off | On = the custom effect **owns** this trigger's effect output (see below) |
-| Custom effect trigger condition | While held / On press / On release | While held | *While held* = armed continuously (mechanical sequencing, sustained vibration). *On press* / *On release* = a ~250 ms one-shot as the trigger crosses the zone |
+| Custom effect trigger condition | While held / On press / On release | While held | *While held* = armed continuously — **required for a multi-stage effect to sequence**, and used for a sustained vibration. *On press* / *On release* = a one-shot as the trigger crosses the zone, so only the first stage of a sequence would play |
 | Custom effect zone | 0–9 | 0 | *While held:* the **re-arm zone** — walls reset when the trigger returns below it; **0 = only at full release** (finger off, nothing to push against, no click). *On press / On release:* the **engage point — must be ≥ 1** |
 | Custom effect A↔B toggle rate | 1–100 | 40 | **Only** for 2-state vibration actions (~2–40 Hz). Ignored for mechanical and timeline effects |
 | Custom effect state count | 1–5 | — | **Auto-set** by Assign / file load; never set manually |
 
-**What works — and what doesn't — while a custom effect is enabled**
+**Sharing a trigger with the sliders (gate hand-off)**
 
-Enabling a custom effect gives it **exclusive ownership of that trigger's effect
-output**. On that trigger, these have **no effect**:
+By default a custom effect owns its trigger outright. The **Custom effect vs
+sliders** setting lets the two share instead. The gate is the physical gate
+input — the **opposite trigger** pressed past that trigger's threshold, or the
+**shoulder button** if its resistance mode is the shoulder-gated one:
+
+| Setting | Gate engaged | Gate not engaged |
+|---|---|---|
+| Custom effect always owns (default) | custom effect | custom effect |
+| Sliders while gated, custom otherwise | synthesized slider effect | custom effect |
+| Custom effect while gated, sliders otherwise | custom effect | synthesized slider effect |
+
+With R2's resistance set to *L2-gated*, the middle option gives the classic
+split: hip fire plays your captured multi-stage weapon effect, and the moment L2
+passes its threshold R2 switches to the synthesized resistance, kick and all. The
+third option inverts it — aim down sights to get the captured effect.
+
+Notes:
+- Only one effect plays at a time; this is a **switch**, not a layer.
+- The swap happens live, so changing the gate while the trigger is already held
+  changes the feel under your finger.
+- The slider side needs a resistance mode that is **armed in the half it
+  covers** — the portal warns inline if the combination would leave one half
+  silent, naming the setting to change. For *sliders while gated*, a gated resistance mode lines up exactly.
+  For *custom effect while gated*, set the resistance to **always on** — the
+  custom effect takes over while the gate is held, and the sliders cover the rest.
+- **Removing an effect:** the Build a Custom Effect panel has *Remove effect from
+  R2 / L2*, which wipes that trigger's stored states, switches the custom effect
+  off and returns the trigger to its sliders. Everything else on that trigger —
+  including this hand-off setting — is left as you set it. Save to a slot
+  afterwards to make it stick for that profile.
+- Silence on either side is just that side configured off (resistance off, kick
+  0, R2T off), so "captured effect while aiming, nothing otherwise" is a valid
+  setup.
+
+**What works — and what doesn't — while a custom effect owns the trigger**
+
+While the custom effect owns the trigger (always, by default — or only on one
+side of the gate, if you set the hand-off above), these have **no effect** on
+that trigger:
 
 - Resistance — mode, strength, shape, start position, detent / break point, Strength B
 - Push-back kick — strength, style, thump frequency
@@ -593,9 +682,9 @@ is high-passed to protect the small speaker from low-frequency popping.
   applying a wake change through an auto-apply profile is unreliable. **Recommended:
   choose wake on or off once and leave it — don't switch it per-game.** If you rely
   on native haptics or the auto-apply profiles, keep wake **off**.
-- **Upgrading to 1.14.0 (custom effects).** The on-device configuration layout
+- **Upgrading to 1.14.8 (custom effects).** The on-device configuration layout
   changed in this release. Existing settings migrate, but any custom captured
-  effect assigned under a pre-1.14.0 test build must be **re-assigned** from the
+  effect assigned under a pre-1.14.8 test build must be **re-assigned** from the
   Trigger Effect Monitor or re-loaded from its JSON file after flashing.
 - **Hub-induced suspends.** A brief USB suspend caused by a flaky hub (while the host
   is awake) no longer powers off the controller. The power-off is debounced so only a
@@ -673,7 +762,7 @@ copyright notice is preserved as required.
 
 ## Files in this release
 
-- `ds5-v1.14.0.uf2` — the firmware (flash this; reports version 1.14.0)
+- `ds5-v1.14.8.uf2` — the firmware (flash this; reports version 1.14.8)
 - `ds5-config-portal.html` — the web configuration portal (download and open)
 - `flash_nuke.uf2` — config-reset utility (run before flashing if coming from a
   different config layout)
