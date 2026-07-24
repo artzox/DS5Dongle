@@ -189,6 +189,8 @@ void config_valid() {
     if (body->ce_l2_thresh > 9) body->ce_l2_thresh = 0;
     if (body->ce_l2_rate < 1 || body->ce_l2_rate > 100) body->ce_l2_rate = 40;
     if (body->ce_l2_state_count > 5) body->ce_l2_state_count = 0;
+    if (body->ce_r2_yield > 2) body->ce_r2_yield = 0;
+    if (body->ce_l2_yield > 2) body->ce_l2_yield = 0;
     if (body->r2t_mode > 3) body->r2t_mode = 0;            // 0=off
     if (body->r2t_on_press > 1) body->r2t_on_press = 0;    // 0=always
     if (body->r2t_strength > 100) body->r2t_strength = 100; // full strength

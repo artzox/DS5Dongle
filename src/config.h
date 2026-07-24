@@ -173,6 +173,14 @@ struct __attribute__((packed)) Config_body {
     uint8_t  ce_l2_state_count;
     uint8_t  ce_l2_states[5][11];
     uint16_t ce_l2_dt[5];
+    // Gate hand-off between the custom effect and the slider adaptive-trigger,
+    // per trigger. The gate is the SLIDER path's own engagement (at_mode: L2-gated,
+    // L1-gated or always), so its threshold and hysteresis are reused as-is.
+    //   0 = off      - custom effect owns the trigger whenever it is enabled (default)
+    //   1 = sliders when gated  - gate engaged -> synthesized effect; otherwise custom
+    //   2 = custom when gated   - gate engaged -> custom effect; otherwise sliders
+    uint8_t  ce_r2_yield;
+    uint8_t  ce_l2_yield;
 };
 
 struct __attribute__((packed)) Config {

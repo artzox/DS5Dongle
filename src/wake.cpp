@@ -63,6 +63,10 @@ typedef enum {
 
 static critical_section_t wake_cs;
 static volatile bool host_suspended = false;
+// Read-only query for other subsystems: while the host is suspended there is
+// nothing to synthesize for, and extra BT output traffic competes with the
+// input reports wake-on-PS must observe.
+bool wake_host_is_suspended(void) { return host_suspended; }
 static volatile bool host_resumed_event = false;
 static wake_state_t state = WAKE_IDLE;
 static uint64_t state_entered_us = 0;

@@ -438,7 +438,18 @@ int main() {
         {
             static uint32_t last_synth_tick_ms = 0;
             const uint32_t now = to_ms_since_boot(get_absolute_time());
-            if (now - last_synth_tick_ms >= 50) {
+            // 8 ms, not 50: a custom-effect stage sequence latches on trigger
+            // POSITION, and a pull takes ~100-200 ms, so a 50 ms cadence gave only
+            // 2-4 samples per pull and routinely skipped a stage's arming window
+            // ("sometimes I get the wall, sometimes I don't"). The call is cheap -
+            // it early-returns unless the host has gone quiet, and only pushes a
+            // report when the composed state actually changes.
+            // While the host is SUSPENDED there is nothing to synthesize for, and
+            // the extra BT output traffic competes with the input reports that
+            // wake-on-PS has to observe - so stand down completely until resume.
+            // (Raising this cadence from 50 ms without that guard is what made
+            // wake less reliable than 1.13.3.)
+            if (!wake_host_is_suspended() && now - last_synth_tick_ms >= 8) {
                 last_synth_tick_ms = now;
                 if (state_synth_tick()) {
                     uint8_t outputData[78]{};

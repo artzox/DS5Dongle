@@ -7,6 +7,7 @@
 //
 
 #include "state_mgr.h"
+#include "wake.h"
 
 #include <cstddef>
 #include <cstring>
@@ -110,7 +111,18 @@ static bool state_update_apply(const uint8_t *data, uint8_t size);
 bool state_synth_tick() {
     if (!g_host_cache_size) return false;                  // no host intent cached yet
     const uint32_t now = to_ms_since_boot(get_absolute_time());
-    if (now - g_last_host_ms < 50) return false;           // host actively driving
+    // Nothing to synthesize while the host is suspended, and the extra BT output
+    // traffic competes with the input reports wake-on-PS must observe.
+    if (wake_host_is_suspended()) return false;
+    // Quiet-window before we recompose. Normally 50 ms, but when a custom effect
+    // owns a trigger we need a fine-grained view of trigger POSITION (stage
+    // transitions latch), so drop to 8 ms - still far slower than the 250-1000 Hz
+    // a host report path already handles.
+    {
+        const Config_body &c = get_config();
+        const uint32_t quiet_ms = (c.ce_r2_enable || c.ce_l2_enable) ? 8u : 50u;
+        if (now - g_last_host_ms < quiet_ms) return false;  // host actively driving
+    }
     alignas(4) static uint8_t copy[sizeof(SetStateData)];
     memcpy(copy, g_host_cache, g_host_cache_size);
     if (now - g_last_host_ms >= 300) {
@@ -422,6 +434,14 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         static uint32_t ce_tl_next_r2 = 0, ce_tl_next_l2 = 0;
         // Two-wall sequencer stage: 0 = lower wall armed, 1 = upper wall armed.
         static uint8_t  ce_seq_stage_r2 = 0, ce_seq_stage_l2 = 0;
+        // A 0x26 vibration does not sustain from a single write - it needs
+        // re-triggering. While-held asserts identical bytes, which the change
+        // suppression collapses to ONE send, so a held vibration went silent
+        // (press/release worked only because each engagement is a fresh
+        // Off->effect transition). Force a periodic re-send while a vibration
+        // state is the one being written.
+        static uint32_t ce_vib_next_r2 = 0, ce_vib_next_l2 = 0;
+        constexpr uint32_t CE_VIB_REFRESH_MS = 25;
         static bool ce_broke_r2 = false, ce_broke_l2 = false;
         bool ce_active_r2 = false, ce_active_l2 = false;
         const uint8_t *ce_write_r2 = nullptr, *ce_write_l2 = nullptr;
@@ -480,35 +500,70 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
                                      uint8_t &stage, bool &rearm_pulse) -> const uint8_t* {
                 (void)dt;
                 if (count < 2 || count > 5) return nullptr;
-                uint8_t order[5]; uint8_t zlo[5];
+                uint8_t order[5]; uint8_t zlo[5]; uint8_t zhi[5];
+                bool any_mech = false;
                 for (uint8_t i = 0; i < count; ++i) {
                     const uint8_t t = states[i][0];
-                    const bool mech = (t == 0x21 || t == 0x01 || t == 0x25 || t == 0x23);
-                    if (!mech) return nullptr;
+                    // Bow/snap (0x22/0x02) is a FORCE effect like resistance and
+                    // weapon-break, so it belongs with the mechanical group: placed by
+                    // position, durations ignored. Left out of this list it fell through
+                    // to the time-based path, where a captured pair with short recorded
+                    // durations was retriggered ~20x/second - which feels like a
+                    // continuous buzz, not a bow.
+                    const bool mech = (t == 0x21 || t == 0x01 || t == 0x25 || t == 0x23 ||
+                                       t == 0x22 || t == 0x02);
+                    const bool vib  = (t == 0x26 || t == 0x06 || t == 0x27);
+                    if (!mech && !vib) return nullptr;
+                    if (mech) any_mech = true;
                     // NOTE: recorded durations are IGNORED for mechanical sets - they are
                     // game-state/performance timing, not effect structure (taxonomy). This
                     // also rescues timeline-saved files: loading one with durations used to
                     // drop the set into the timeline stepper, which swapped wall/resistance
                     // on multi-second timers - felt as "works sometimes" plus phantom clicks
                     // at rest as states toggled under the finger. Mechanical => positional.
-                    uint8_t hi_;
-                    wall_zones(states[i], zlo[i], hi_); (void)hi_;
+                    wall_zones(states[i], zlo[i], zhi[i]);
                     order[i] = i;
                 }
                 for (uint8_t a = 1; a < count; ++a)
                     for (uint8_t b = a; b > 0 && zlo[order[b]] < zlo[order[b-1]]; --b) {
                         uint8_t tmp = order[b]; order[b] = order[b-1]; order[b-1] = tmp;
                     }
+                // A set that is ALL vibration keeps the time-based path (rate blend or
+                // timeline) - that's where a vibration's rhythm lives. A MIXED set
+                // (at least one mechanical stage) sequences positionally, so a
+                // vibration can be a stage in the pull, e.g. wall -> wall -> buzz
+                // while held deep. Note this also supplies the position gating a
+                // 0x26 lacks on its own.
+                if (!any_mech) return nullptr;
                 for (uint8_t a = 1; a < count; ++a)
                     if (zlo[order[a]] == zlo[order[a-1]]) return nullptr;
                 if (stage >= count) stage = 0;
+                // Reset FIRST, and only once the pull is back below the WHOLE sequence.
+                // Two bugs lived here: the reset ran after the advance, so it undid a
+                // stage change made in the same call; and it used the raw re-arm zone,
+                // which for anything but zone 0 sits INSIDE the sequence - so every
+                // evaluation snapped back to stage 1 and later stages were unreachable.
+                {
+                    int eff = (int)rearm_pos;
+                    const int below = (int)zpos(zlo[order[0]]) - 1;
+                    if (below < eff) eff = below;
+                    if (eff < 0) eff = 0;
+                    if (stage != 0 && (int)pos <= eff) { stage = 0; rearm_pulse = true; }
+                }
                 while (stage + 1 < count) {
+                    // Hand over as EARLY as is safe: when the pull leaves the current
+                    // stage's own region, or 12 counts before the next stage begins -
+                    // whichever comes first. Arming the next wall well ahead of the
+                    // finger is what makes it reliably felt; a lead of only 12 counts
+                    // was often jumped in a single sample on a fast pull, so the wall
+                    // armed behind the finger and was never felt.
                     int sw = (int)zpos(zlo[order[stage + 1]]) - 12;
+                    const int endcur = (int)zpos(zhi[order[stage]]);
+                    if (endcur < sw) sw = endcur;
                     if (sw < 1) sw = 1;
                     if (pos >= (uint8_t)sw) { stage++; rearm_pulse = true; }
                     else break;
                 }
-                if (stage != 0 && pos <= rearm_pos) { stage = 0; rearm_pulse = true; }
                 return states[order[stage]];
             };
             // R2
@@ -534,9 +589,12 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
                         // Single wall: break-through at its END zone; re-arm with a fresh
                         // identical send when the trigger returns to the re-arm zone.
                         uint8_t zlo0, zhi0;
-                        wall_zones(cfg.ce_r2_states[0], zlo0, zhi0); (void)zlo0;
+                        wall_zones(cfg.ce_r2_states[0], zlo0, zhi0);
                         if (g_r2_pos >= zpos(zhi0)) ce_broke_r2 = true;
-                        if (ce_broke_r2 && g_r2_pos <= rearm_pos) {
+                        int eff_rearm = (int)rearm_pos;              // never inside the wall
+                        if ((int)zpos(zlo0) - 1 < eff_rearm) eff_rearm = (int)zpos(zlo0) - 1;
+                        if (eff_rearm < 0) eff_rearm = 0;
+                        if (ce_broke_r2 && (int)g_r2_pos <= eff_rearm) {
                             ce_rearm_pulse_r2 = true;
                             ce_broke_r2 = false;
                         }
@@ -573,9 +631,12 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
                     } else if (cfg.ce_l2_state_count < 2 &&
                                (cfg.ce_l2_states[0][0] == 0x25 || cfg.ce_l2_states[0][0] == 0x23)) {
                         uint8_t zlo0, zhi0;
-                        wall_zones(cfg.ce_l2_states[0], zlo0, zhi0); (void)zlo0;
+                        wall_zones(cfg.ce_l2_states[0], zlo0, zhi0);
                         if (g_l2_pos >= zpos(zhi0)) ce_broke_l2 = true;
-                        if (ce_broke_l2 && g_l2_pos <= rearm_pos) { ce_rearm_pulse_l2 = true; ce_broke_l2 = false; }
+                        int eff_rearm = (int)rearm_pos;              // never inside the wall
+                        if ((int)zpos(zlo0) - 1 < eff_rearm) eff_rearm = (int)zpos(zlo0) - 1;
+                        if (eff_rearm < 0) eff_rearm = 0;
+                        if (ce_broke_l2 && (int)g_l2_pos <= eff_rearm) { ce_rearm_pulse_l2 = true; ce_broke_l2 = false; }
                     }
                 } else if (cfg.ce_l2_condition == 1) {
                     if (past && !was_past) ce_oneshot_l2_until = now_ms + 250;
@@ -615,6 +676,40 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
             : ((cfg.at_l2_strength > cfg.at_l2_strength_b) ? cfg.at_l2_strength : cfg.at_l2_strength_b);
         const bool at_wants_r2 = at_engage(cfg.at_mode > 3 ? 0 : cfg.at_mode, g_l2_pos, g_l1_btn, cfg.at_threshold, at_eff_r2, at_engaged);
         const bool at_wants_l2 = at_engage(cfg.at_l2_mode > 3 ? 0 : cfg.at_l2_mode, g_r2_pos, g_r1_btn, cfg.at_l2_threshold, at_eff_l2, at_engaged_l2);
+
+        // -- Gate hand-off between the custom effect and the slider adaptive-trigger --
+        // The gate is the physical GATE INPUT (the opposite trigger past the
+        // trigger's own at_threshold, or the shoulder button when the resistance
+        // mode is shoulder-gated) - NOT the slider path's engagement. Keying off
+        // at_wants made "custom while gated, sliders otherwise" useless: with a
+        // gated resistance mode, the gate being open ALSO means the slider path is
+        // disengaged, so yielding to it produced silence. Reading the input itself
+        // lets both directions work; the slider side just needs a resistance mode
+        // that is armed in the state it is meant to cover (an "always on"
+        // resistance for the ungated half, a gated one for the gated half).
+        // Own hysteresis so the hand-off doesn't chatter at the threshold.
+        static bool ce_gate_r2_on = false, ce_gate_l2_on = false;
+        auto ce_gate_eval = [](bool &st, uint8_t mode, uint8_t pos, uint8_t btn,
+                               uint8_t thr) -> bool {
+            if (mode == 3) { st = (btn != 0); return st; }   // shoulder-gated
+            const uint8_t on_thr  = thr ? thr : 1;
+            const uint8_t off_thr = (on_thr > 12) ? (uint8_t)(on_thr - 12) : 1;
+            if (!st) { if (pos >= on_thr) st = true; }
+            else     { if (pos <  off_thr) st = false; }
+            return st;
+        };
+        const bool ce_gate_r2 = ce_gate_eval(ce_gate_r2_on, cfg.at_mode,
+                                             g_l2_pos, g_l1_btn, cfg.at_threshold);
+        const bool ce_gate_l2 = ce_gate_eval(ce_gate_l2_on, cfg.at_l2_mode,
+                                             g_r2_pos, g_r1_btn, cfg.at_l2_threshold);
+        // 0 = custom always owns the trigger (previous behaviour);
+        // 1 = sliders while gated, custom otherwise; 2 = the inverse.
+        bool ce_owns_r2 = (cfg.ce_r2_enable != 0);
+        if (ce_owns_r2 && cfg.ce_r2_yield)
+            ce_owns_r2 = (cfg.ce_r2_yield == 1) ? !ce_gate_r2 : ce_gate_r2;
+        bool ce_owns_l2 = (cfg.ce_l2_enable != 0);
+        if (ce_owns_l2 && cfg.ce_l2_yield)
+            ce_owns_l2 = (cfg.ce_l2_yield == 1) ? !ce_gate_l2 : ce_gate_l2;
 
         // -- Stage 2 kick: computed ONCE per cycle (shared envelope + burst state),
         // then written to whichever target trigger(s) are engaged. See the Stage 2
@@ -785,16 +880,28 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // Priority mirrors R2: game > resistance/kick (if targeted) > vibration.
         if (game_owns_l2) {
             release_left(true);      // game drives it: drop our claim, keep its effect
-        } else if (ce_active_l2 && ce_write_l2) {
+        } else if (ce_owns_l2 && ce_active_l2 && ce_write_l2) {
             // Custom captured effect owns the trigger: write the raw state verbatim.
             memcpy(state.LeftTriggerFFB, ce_write_l2, 11);
+            {   // keep a held vibration alive (see CE_VIB_REFRESH_MS note above)
+                const uint8_t vt = ce_write_l2[0];
+                if (vt == 0x26 || vt == 0x06 || vt == 0x27) {
+                    const uint32_t vnow = to_ms_since_boot(get_absolute_time());
+                    if (vnow >= ce_vib_next_l2) {
+                        g_ce_force_send = true;
+                        ce_vib_next_l2 = vnow + CE_VIB_REFRESH_MS;
+                    }
+                } else {
+                    ce_vib_next_l2 = 0;
+                }
+            }
             if (ce_rearm_pulse_l2) {
                 g_ce_force_send = true;   // fresh identical re-send = gentle re-arm
                 ce_rearm_pulse_l2 = false;
             }
             state.AllowLeftTriggerFFB = 1;
             synth_owned_l2 = true;
-        } else if (cfg.ce_l2_enable) {
+        } else if (ce_owns_l2) {
             // Enabled but idle: own the trigger exclusively, don't leak slider/r2t.
             release_left(false);
         } else if (at_wants_l2) {
@@ -822,8 +929,20 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
         // rumble normally, R2 stiffens the moment you aim, vibration resumes on release.
         if (game_owns_r2) {
             release_right(true);
-        } else if (ce_active_r2 && ce_write_r2) {
+        } else if (ce_owns_r2 && ce_active_r2 && ce_write_r2) {
             memcpy(state.RightTriggerFFB, ce_write_r2, 11);
+            {   // keep a held vibration alive (see CE_VIB_REFRESH_MS note above)
+                const uint8_t vt = ce_write_r2[0];
+                if (vt == 0x26 || vt == 0x06 || vt == 0x27) {
+                    const uint32_t vnow = to_ms_since_boot(get_absolute_time());
+                    if (vnow >= ce_vib_next_r2) {
+                        g_ce_force_send = true;
+                        ce_vib_next_r2 = vnow + CE_VIB_REFRESH_MS;
+                    }
+                } else {
+                    ce_vib_next_r2 = 0;
+                }
+            }
             if (ce_rearm_pulse_r2) {
                 // Re-arm: identical bytes, but force the send so the controller
                 // receives a fresh effect write (re-arms the break) with NO Off
@@ -833,8 +952,9 @@ static bool state_update_apply(const uint8_t *data, const uint8_t size) {
             }
             state.AllowRightTriggerFFB = 1;
             synth_owned_r2 = true;
-        } else if (cfg.ce_r2_enable) {
-            // Custom effect is ENABLED but not currently engaged (below threshold /
+        } else if (ce_owns_r2) {
+            // Custom effect OWNS this trigger but is not currently engaged (below
+            // threshold /
             // between presses): it owns this trigger exclusively, so DON'T fall
             // through to the slider adaptive-trigger (at_wants, incl. its kick/bow)
             // or r2t - those would leak a wall/bow on the next press before the
