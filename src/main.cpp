@@ -119,7 +119,16 @@ void __not_in_flash_func(interrupt_loop)() {
 // --- Gyro -> right-stick aiming with Mahony AHRS fusion --------------------
 // Adds the controller's angular velocity onto the right stick in the input
 // report the PC sees, so ANY game gets gyro aiming with zero PC software.
-// Integer-only so it is safe inside the report critical section.
+//
+// Timing / performance note: this whole block runs inside the Bluetooth report
+// callback (`on_bt_data`), including inside the report critical section when
+// polling_rate_mode == 2. Space modes that need an orientation (World, Player)
+// do a bounded amount of float work each report (one Mahony update:
+// sqrtf/sinf/cosf, no allocation, no loops) at ~250-1000 Hz, which is well
+// within the RP2040 budget. Traditional mode stays on the original integer-only
+// legacy path with zero added processing. The function is __not_in_flash_func
+// so it executes from RAM.
+//
 // Report offsets (from utils.h DualSense report layout):
 //   RightStickX=2, RightStickY=3, TriggerLeft=4,
 //   Gyro pitch (AngularVelocityX)=15, roll (AngularVelocityZ)=17, yaw (AngularVelocityY)=19
@@ -167,29 +176,45 @@ static inline Vector3 quat_rotate(const Quaternion &q, const Vector3 &v) {
     return {(int32_t)res.x, (int32_t)res.y, (int32_t)res.z};
 }
 
-// --- World Space: Mahony AHRS Filter for drift-resistant orientation -------
-// The Mahony filter fuses gyro and accelerometer to maintain a stable quaternion
-// representing the controller's orientation in the world frame.
-// 
-// Coordinate system:
-//   World frame (gravity reference, independent of controller rotation):
-//     X = left/right   (aiming left/right)
-//     Y = up/down      (aiming up/down,  +Y points AWAY from gravity)
-//     Z = forward/back
-//   Controller sensor frame:
-//     Local gyro and accelerometer readings
+// --- Mahony AHRS Filter: q_device_to_world ---------------------------------
+// A proper IMU orientation filter (Madgwick-style / Mahony) fusing the DualSense
+// gyroscope + accelerometer into a stable quaternion that represents the
+// controller's orientation in the gravity-aligned world frame.
+//
+// Coordinate system definitions:
+//   Device space: the controller's own axes (the frame the raw gyro/accel live
+//     in). Per the DualSense report layout (utils.h):
+//       X = controller left/right  (pitch  axis, byte 15)
+//       Y = controller forward/back (yaw   axis, byte 17)
+//       Z = controller up/down     (roll  axis, byte 19)
+//   World space: gravity-aligned frame, independent of controller rotation.
+//       X = left/right
+//       Y = up/down      (+Y points AWAY from gravity; "floor" defines vertical)
+//       Z = forward/back
+//   Player space: coordinate system captured during calibration. At calibration
+//     q_player_reference = current q_device_to_world, and aiming is done in that
+//     frame via relative_rotation = q_current * inverse(q_player_reference).
 //
 // The filter works by:
-// 1. Integrating gyro to get rotation (fast, but drifts over time)
-// 2. Correcting roll/pitch with the accelerometer gravity vector (slow, stable
+// 1. Integrating gyro to get rotation (fast, but drifts over time). The gyro
+//    provides fast rotation tracking and all yaw changes.
+// 2. Correcting pitch/roll with the accelerometer gravity vector (slow, stable
 //    reference that never drifts). Yaw around gravity is unobservable without a
 //    magnetometer, so it is anchored by the world-space calibration reference
 //    and can slowly wander; pressing "Calibrate World Space" re-anchors it.
-// 3. Using proportional + integral error correction to dampen drift
+// 3. Using proportional + integral error correction to dampen drift.
 //
 // The controller can be held at ANY angle (flat, vertical, even upside down);
 // the fused quaternion always tells us which way the world's up/down/left/right
 // are relative to the sensor, so the aiming axes stay fixed to the game world.
+//
+// Filter update flow (per report, only for World/Player modes):
+//   raw gyro (counts)  --GYRO_TO_RAD_PER_SEC-->  rad/s
+//   raw accel          --normalize-->             measured up, sensor frame
+//   error  = measured_up x (q^-1 * world_up * q)  (cross product in sensor frame)
+//   gyro_c = gyro + Kp*error + Ki*integral(error) (clamped)
+//   q     += q * exp(gyro_c * dt / 2)             (right-multiplied, body frame)
+//   q       = normalize(q)                        (quaternion drift prevention)
 
 // Mahony filter coefficients (tuned for RP2040 + DualSense)
 // Kp: proportional gain (larger = faster convergence, more noise)
@@ -197,20 +222,24 @@ static inline Vector3 quat_rotate(const Quaternion &q, const Vector3 &v) {
 static constexpr float MAHONY_KP = 0.5f;  // proportional
 static constexpr float MAHONY_KI = 0.02f; // integral
 
-// Scale from raw gyro counts to radians/second (empirical for the DualSense
-// IMU at the ~250Hz report rate; kept identical to the simple integrator so
-// all space modes share one consistent scale).
-static constexpr float GYRO_TO_RAD_PER_SEC = 0.0001f;
+// Scale from raw gyro counts to radians/second. The DualSense IMU reports
+// 1024 LSB per deg/s (DS_GYRO_RES_PER_DEG_S in the Linux kernel driver
+// drivers/hid/hid-playstation.c), so:
+//   rad/s = counts * (pi/180 deg/s) / (1024 counts per deg/s)
+static constexpr float GYRO_TO_RAD_PER_SEC = 3.14159265358979f / 180.0f / 1024.0f;
 
-// Runtime orientation (Mahony-fused world orientation for World Space mode)
+// Runtime orientation: q_device_to_world, the Mahony-fused quaternion mapping
+// the controller's coordinate frame onto the gravity-aligned world frame
+// (world X = left/right, Y = up/down, Z = forward/back).
 Quaternion g_world_orientation = quat_identity();
-Quaternion g_world_reference = quat_identity();  // calibration reference
+Quaternion g_world_reference = quat_identity();  // world yaw-anchor quaternion
 bool g_world_ref_set = false;
+bool g_world_ref_explicit = false;  // set when the player calibrated with 0x67
 
-// Gyro integration state (for modes that need it)
-Quaternion g_orientation = quat_identity();
+// Player-space calibration reference (q_player_reference, captured at calibration).
 Quaternion g_player_reference = quat_identity();
 bool g_player_ref_set = false;
+bool g_player_ref_explicit = false;  // set when the player calibrated with 0x66
 bool g_prev_gyro_allowed = false;
 
 // Mahony AHRS error accumulator (integral term)
@@ -218,18 +247,41 @@ static float mahony_error_x = 0.0f;
 static float mahony_error_y = 0.0f;
 static float mahony_error_z = 0.0f;
 
-// Helper to set the player reference to the current orientation (calibration)
-// Exposed so UI/commands can reset the player reference explicitly.
-void set_player_reference_now() {
-    g_player_reference = g_orientation;
-    g_player_ref_set = true;
+// Compute the world-frame yaw anchor that zeroes the heading at calibration.
+//
+// Returns a rotation about world up (+Y). Left-multiplied onto the LIVE fused
+// orientation (anchor * q_live), it maps the controller's forward axis (device
+// +Z) at calibration onto world +Z. Pitch/roll keep following the accelerometer
+// (up is always game up); only the unobservable heading (world yaw -- there is
+// no magnetometer) is frozen to the calibration pose.
+static Quaternion world_yaw_anchor(const Quaternion &q_ref) {
+    // Device forward axis in world coordinates: f = q_ref * (0,0,1) * q_ref^-1
+    const Vector3 f = quat_rotate(q_ref, {0, 0, 1});
+    const float fx = (float)f.x;
+    const float fz = (float)f.z;
+    const float horiz = sqrtf(fx*fx + fz*fz);
+    if (horiz < 1e-6f) return quat_identity(); // forward points straight up/down: no heading
+    const float theta = atan2f(fx, fz);        // heading of forward about world up
+    const float h = -0.5f * theta;
+    return {cosf(h), 0.0f, sinf(h), 0.0f};     // rotation about world +Y by -theta
 }
 
-// Helper to set the world reference to the current world orientation (calibration)
+// Helper to set the player reference to the current orientation (calibration).
+// Exposed so UI/commands (command 0x66) can reset the player reference.
+// Marked explicit so the reference survives re-activation of gyro aiming.
+void set_player_reference_now() {
+    g_player_reference = g_world_orientation;
+    g_player_ref_set = true;
+    g_player_ref_explicit = true;
+}
+
+// Helper to set the world reference to the current world orientation (calibration).
 // Exposed so UI/commands (command 0x67) can reset the world-space heading.
+// Marked explicit so the reference survives re-activation of gyro aiming.
 void set_world_reference_now() {
-    g_world_reference = g_world_orientation;
+    g_world_reference = world_yaw_anchor(g_world_orientation);
     g_world_ref_set = true;
+    g_world_ref_explicit = true;
 }
 
 // Mahony AHRS filter update
@@ -305,23 +357,6 @@ static inline void mahony_update(const Vector3 &gyro_raw, const Vector3 &accel_r
     g_world_orientation = quat_normalize(g_world_orientation);
 }
 
-static inline void integrate_orientation_from_gyro(const Vector3 &gyro, float dt) {
-    // Simple gyro integration (for non-World modes like Local and Player)
-    // The raw gyro units are device-specific; use a small scale.
-    const float scale = 0.0001f; // empirical small gain
-    const float ax = gyro.x * scale * dt;
-    const float ay = gyro.y * scale * dt;
-    const float az = gyro.z * scale * dt;
-    const float angle = sqrtf(ax*ax + ay*ay + az*az);
-    if (angle < 1e-9f) return;
-    const float s = sinf(angle * 0.5f) / angle;
-    const Quaternion dq{ cosf(angle * 0.5f), ax * s, ay * s, az * s };
-    g_orientation = quat_mul(dq, g_orientation);
-    // normalize
-    const float n = sqrtf(g_orientation.w*g_orientation.w + g_orientation.x*g_orientation.x + g_orientation.y*g_orientation.y + g_orientation.z*g_orientation.z);
-    if (n > 0.0f) { g_orientation.w /= n; g_orientation.x /= n; g_orientation.y /= n; g_orientation.z /= n; }
-}
-
 // Separate gyro-space transform helpers to keep each mode self-contained
 
 // Mode 0: TRADITIONAL
@@ -344,87 +379,71 @@ static Vector3 apply_gyro_yaw_roll(const Vector3 &gyro) {
 }
 
 // Mode 2: LOCAL_SPACE
-// Description: Angular velocity expressed in controller-local axes.
-// Motion follows the physical controller orientation regardless of where it points.
-// A tilt "forward" (in sensor frame) always aims in the same direction relative to the controller.
-// Useful for: feeling controller-centric, like moving a virtual head mounted on the device.
-// Coordinate system: Sensor-local frame (controller X/Y/Z axes)
-static Vector3 apply_gyro_local_space(const Vector3 &gyro, const Quaternion &orientation) {
-    // Rotate gyro from world frame into controller-local frame using inverse orientation.
-    // local_gyro = inverse(orientation) * gyro
-    Quaternion inv = quat_inverse(orientation);
-    return quat_rotate(inv, gyro);
+// Description: Controller-relative aiming. The raw gyro is already expressed in
+// the controller's own axes, so this is a pure passthrough: movement follows the
+// physical controller axes 1:1 (keeping pitch, unlike Yaw+Roll).
+// Coordinate system: Device space (controller X/Y/Z axes).
+static Vector3 apply_gyro_local_space(const Vector3 &gyro) {
+    return gyro;
 }
 
 // Mode 3: PLAYER_SPACE
-// Description: Angular velocity relative to a player reference direction (captured at calibration).
-// Player holds the controller in a comfortable neutral position before aiming.
-// All motion is relative to that stored direction.
-// Useful for: body-relative aiming without world reference (like holding a rifle on your shoulder).
-// Coordinate system: Player body frame (relative to start orientation)
-static Vector3 apply_gyro_player_space(const Vector3 &gyro, const Quaternion &orientation) {
-    // Compute rotation relative to the stored player reference quaternion.
-    // rel_orientation = current * inverse(reference)
-    // Then extract the relative rotation as a vector.
-    if (!g_player_ref_set) return {0,0,0};
-    const Quaternion rel = quat_mul(orientation, quat_inverse(g_player_reference));
-    const float vx = rel.x, vy = rel.y, vz = rel.z;
-    const float vm = sqrtf(vx*vx + vy*vy + vz*vz);
-    if (vm < 1e-8f) return {0,0,0};
-    const float angle = 2.0f * asinf(fminf(1.0f, vm));
-    const float ax = vx / vm, ay = vy / vm, az = vz / vm;
-    const float scale = 5000.0f; // converts radians -> raw-ish units
-    const int32_t horiz = (int32_t)(ay * angle * scale);
-    const int32_t pitch = (int32_t)(ax * angle * scale);
-    return {pitch, horiz, 0};
+// Description: Body-relative aiming. All motion is expressed relative to the
+// orientation captured at calibration (q_player_reference).
+//
+//   q_player_reference = q_device_to_world at calibration time
+//   relative_rotation  = q_current * inverse(q_player_reference)
+//   gyro_player        = relative_rotation * gyro_device * inverse(relative_rotation)
+//
+// A forward tilt of the controller at calibration still aims "up" even after the
+// controller has been turned or rolled, because the relative rotation rotates the
+// raw device-frame angular velocity into the player's reference frame.
+static Vector3 apply_gyro_player_space(const Vector3 &gyro) {
+    if (!g_player_ref_set) return gyro; // no reference yet: device-local passthrough
+    const Quaternion rel = quat_mul(g_world_orientation, quat_inverse(g_player_reference));
+    return quat_rotate(rel, gyro);
 }
 
 // Mode 4: WORLD_SPACE
-// Description: Earth/player-relative aiming. The aiming axes are anchored to a FIXED
-// calibration reference captured when gyro aiming starts or when the player presses
-// "Calibrate World Space" (command 0x67). After that, no matter how the controller is
-// physically rotated (flat, vertical, even upside down), the output axes stay locked
-// to the game's axes: up movement aims up, left aims left, right aims right, down aims
-// down. Useful for: absolute aiming where camera up is always screen-up.
+// Description: Earth-relative aiming (Steam Input "World Space" behavior).
 //
 // Coordinate systems:
-//   Local space:  controller sensor frame -- axes glued to the controller. A raw gyro
-//                 reading (raw_vec) is ALREADY expressed in this frame.
-//   World space:  fixed player frame independent of controller rotation:
-//                 X = player left/right, Y = player up/down, Z = forward/back.
+//   Device space:  controller sensor frame -- a raw gyro reading is already
+//                  expressed in this frame (pitch=+X, yaw=+Y, roll=+Z).
+//   World space:   gravity-aligned player frame independent of controller pose:
+//                  X = left/right, Y = up/down (+Y = away from gravity),
+//                  Z = forward/back.
 //
-// Why a FROZEN reference instead of the live fused orientation:
-//   Rate-based aiming maps the sensor-frame angular velocity into the game axes with
-//     gyro_world = q * gyro_local * inverse(q)
-//   If q is the LIVE Mahony orientation, physically rotating the controller rotates
-//   the mapping with it: "tilt forward" stops meaning "aim up" and starts meaning
-//   "aim left/right" once the controller is turned 90 degrees. The spec's test case B
-//   (rotate controller 90 deg, tilt forward, must STILL aim up) requires the frame to
-//   NOT follow the controller, so we freeze q at the calibration pose.
+// Transformation (LIVE fused orientation):
+//   gyro_world = q_device_to_world * gyro_device * inverse(q_device_to_world)
 //
-// Transformation formula (rate-based, uses the frozen reference):
-//   gyro_world = g_world_reference * gyro_local * inverse(g_world_reference)
+// Unlike a "frozen reference" approach, q is the LIVE Mahony-fused orientation.
+// Because q tracks pitch/roll via the accelerometer, the mapping stays fixed to
+// the game world even while the controller is physically rotated: holding
+// normally, rotated 90 degrees sideways, or held upside down all keep
+// "tilt forward = aim up / left = left". This matches Steam Input World Space.
 //
-// Drift: the output path is a fixed rotation of the raw gyro -- it contains no
-// integration, so it cannot drift. The Mahony filter (accelerometer gravity
-// correction + quaternion normalization + integral error term) is only used to
-// obtain an accurate g_world_reference at calibration time.
+// Heading (world yaw) is not observable without a magnetometer, so it is anchored
+// at calibration: the yaw-anchor quaternion (world_yaw_anchor) is left-multiplied
+// so the controller's forward at calibration time becomes world +Z. Up/down and
+// left/right always follow gravity; only the yaw datum is frozen.
 static Vector3 apply_gyro_world_space(const Vector3 &gyro) {
-    // Anchor: the calibration reference if captured, otherwise identity (raw gyro
-    // passthrough). The player should press "Calibrate World Space" (0x67) or
-    // re-activate aiming to re-anchor to the current hold pose.
     const Quaternion anchor = g_world_ref_set ? g_world_reference : quat_identity();
-    // gyro_world = anchor * gyro_local * inverse(anchor)
-    return quat_rotate(anchor, gyro);
+    const Quaternion q_used = quat_mul(anchor, g_world_orientation);
+    // gyro_world = q_used * gyro_device * inverse(q_used)
+    return quat_rotate(q_used, gyro);
 }
 
-// Dispatcher kept for compatibility with earlier callsites
-static Vector3 apply_gyro_space(Vector3 gyro, const Quaternion &orientation, uint8_t mode) {
+// Dispatcher: maps a raw device-frame gyro reading to the selected space mode.
+// Traditional passes through untouched (gyro_axis selection happens downstream
+// in apply_gyro_stick), and the output of every mode feeds the same sensitivity /
+// invert / deadzone / stick pipeline.
+static Vector3 apply_gyro_space(Vector3 gyro, uint8_t mode) {
     switch (mode) {
         case GYRO_SPACE_TRADITIONAL: return apply_gyro_traditional(gyro);
         case GYRO_SPACE_YAW_ROLL:    return apply_gyro_yaw_roll(gyro);
-        case GYRO_SPACE_LOCAL:       return apply_gyro_local_space(gyro, orientation);
-        case GYRO_SPACE_PLAYER:      return apply_gyro_player_space(gyro, orientation);
+        case GYRO_SPACE_LOCAL:       return apply_gyro_local_space(gyro);
+        case GYRO_SPACE_PLAYER:      return apply_gyro_player_space(gyro);
         case GYRO_SPACE_WORLD:       return apply_gyro_world_space(gyro);
         default: return gyro;
     }
@@ -441,33 +460,39 @@ static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
     // Raw sensor reads (preserve original mapping):
     // Gyro: pitch (AngularVelocityX) @ 15, yaw (AngularVelocityY) @ 19,
     //       roll (AngularVelocityZ) @ 17
-    // Accelerometer (authoritative layout in utils.h USBGetStateData):
-    //       AccX @ 21, AccY @ 23, AccZ @ 25  (int16 LE)
-    // NOTE: the accelerometer MUST be read from 21/23/25. Reading it from 9/11/13
-    // (button/counter bytes) fed garbage into the Mahony filter and broke World Space.
     const int32_t raw_pitch = rd16(15);
     const int32_t raw_yaw = rd16(17);
     const int32_t raw_roll = rd16(19);
-    const int32_t acc_x = rd16(21);   // AccX
-    const int32_t acc_y = rd16(23);   // AccY
-    const int32_t acc_z = rd16(25);   // AccZ
-
-    // Time step based on polling rate (approx): 250Hz=0.004s, 500Hz=0.002s, realtime=0.001s
-    float dt = 0.004f;
-    if (cfg.polling_rate_mode == 1) dt = 0.002f;
-    if (cfg.polling_rate_mode == 2) dt = 0.001f;
 
     Vector3 raw_vec{ raw_pitch, raw_yaw, raw_roll };
-    // accel_vec is assembled as { AccX, AccZ, AccY } so that its Y component reads
-    // +1g when the controller lies flat face-up (the DualSense AccZ axis points out
-    // of the face). This matches world_up = (0, +1, 0) used by the Mahony filter,
-    // so the filter converges to identity at rest in the neutral pose.
-    Vector3 accel_vec{ acc_x, acc_z, acc_y };
 
-    // World Space: run the Mahony AHRS filter on EVERY report (even while the
-    // activation gate is closed) so g_world_orientation is always gravity-converged
-    // and the reference captured when aiming starts is accurate.
-    if (cfg.gyro_space_mode == GYRO_SPACE_WORLD) {
+    // World and Player modes need a fused orientation (q_device_to_world). Run the
+    // Mahony AHRS on EVERY report -- even while the activation gate is closed -- so
+    // the orientation is always gravity-converged and the reference captured when
+    // aiming starts is accurate. Traditional / Yaw+Roll / Local never touch the
+    // accelerometer or the filter (Traditional stays byte-for-byte legacy).
+    const bool need_orientation = (cfg.gyro_space_mode == GYRO_SPACE_WORLD ||
+                                   cfg.gyro_space_mode == GYRO_SPACE_PLAYER);
+    if (need_orientation) {
+        // Time step based on polling rate (approx): 250Hz=0.004s, 500Hz=0.002s,
+        // realtime=0.001s.
+        float dt = 0.004f;
+        if (cfg.polling_rate_mode == 1) dt = 0.002f;
+        if (cfg.polling_rate_mode == 2) dt = 0.001f;
+
+        // Accelerometer (authoritative layout in utils.h USBGetStateData):
+        //       AccX @ 21, AccY @ 23, AccZ @ 25  (int16 LE)
+        // NOTE: the accelerometer MUST be read from 21/23/25. Reading it from 9/11/13
+        // (button/counter bytes) fed garbage into the Mahony filter and broke World Space.
+        const int32_t acc_x = rd16(21);   // AccX
+        const int32_t acc_y = rd16(23);   // AccY
+        const int32_t acc_z = rd16(25);   // AccZ
+        // accel_vec is assembled as { AccX, AccZ, AccY } so that its Y component
+        // reads +1g when the controller lies flat face-up (the DualSense AccZ axis
+        // points out of the face). This matches world_up = (0, +1, 0) used by the
+        // Mahony filter, so the filter converges to identity at rest in the neutral
+        // pose.
+        Vector3 accel_vec{ acc_x, acc_z, acc_y };
         mahony_update(raw_vec, accel_vec, dt);
     }
 
@@ -487,52 +512,51 @@ static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
                            (cfg.gyro_mode == 7 && !(d[8] & 0x02))); // R1 held
     if (!gate_ok) {
         // Gate closed: mark the previous frame as not-allowed so the reference
-        // quaternions are re-captured every time aiming (re)starts.
+        // quaternions are re-captured the next time aiming (re)starts.
         g_prev_gyro_allowed = false;
         return;
     }
-    const bool gyro_allowed = true;
 
-    // Local, Player: simple gyro integration (only while aiming is active, so the
-    // accumulated orientation stays relative to activation start).
-    if (cfg.gyro_space_mode != GYRO_SPACE_TRADITIONAL && cfg.gyro_space_mode != GYRO_SPACE_WORLD) {
-        integrate_orientation_from_gyro(raw_vec, dt);
-    }
-
-    // If PLAYER_SPACE and activation just started, capture reference
-    if (cfg.gyro_space_mode == GYRO_SPACE_PLAYER && !g_prev_gyro_allowed) {
-        g_player_reference = g_orientation;
+    // Capture calibration references on the rising edge of activation. Explicit
+    // calibrations (commands 0x66 / 0x67) set the *_explicit flags and are never
+    // overwritten by auto-recapture, so a calibrated reference survives mode
+    // switching and re-activation. Without an explicit calibration the reference
+    // re-captures every time aiming starts (fresh hold pose).
+    if (cfg.gyro_space_mode == GYRO_SPACE_PLAYER && !g_prev_gyro_allowed && !g_player_ref_explicit) {
+        g_player_reference = g_world_orientation;
         g_player_ref_set = true;
     }
-
-    // If WORLD_SPACE and activation just started, capture world reference
-    if (cfg.gyro_space_mode == GYRO_SPACE_WORLD && !g_prev_gyro_allowed) {
-        g_world_reference = g_world_orientation;
+    if (cfg.gyro_space_mode == GYRO_SPACE_WORLD && !g_prev_gyro_allowed && !g_world_ref_explicit) {
+        g_world_reference = world_yaw_anchor(g_world_orientation);
         g_world_ref_set = true;
     }
-    g_prev_gyro_allowed = gyro_allowed;
+    g_prev_gyro_allowed = true;
 
-    // Apply gyro space transform
-    const Vector3 transformed = apply_gyro_space(raw_vec, g_orientation, cfg.gyro_space_mode);
+    // Apply gyro space transform (output feeds the existing stick pipeline)
+    const Vector3 transformed = apply_gyro_space(raw_vec, cfg.gyro_space_mode);
 
-    // Apply small deadzone as before but on transformed values
     int32_t pitch = transformed.x;
     int32_t horiz;
     if (cfg.gyro_space_mode == GYRO_SPACE_TRADITIONAL) {
         // Preserve legacy axis selection only for Traditional mode
         horiz = (cfg.gyro_axis == 1) ? transformed.z : transformed.y;
     } else {
-        // For space modes, ignore old gyro_axis mapping and use the 'yaw-like'
-        // horizontal component from the transform consistently.
+        // Space modes ignore the legacy gyro_axis mapping and use the horizontal
+        // ('yaw-like') component of the transform consistently.
         horiz = transformed.y;
     }
 
+    // Live diagnostic (portal): |horiz| raw magnitude, pre-deadzone, whenever gyro
+    // is enabled -- exactly like the original pre-space-mode firmware, so the value
+    // stays live near rest.
+    { extern volatile uint16_t g_diag_gyro;
+      int32_t ah = horiz < 0 ? -horiz : horiz;
+      g_diag_gyro = (ah > 65535) ? 65535 : (uint16_t)ah; }
+
+    // Small deadzone as before, applied to the transformed values.
     if (horiz > -12 && horiz < 12) horiz = 0;
     if (pitch > -12 && pitch < 12) pitch = 0;
     if (horiz == 0 && pitch == 0) return;
-
-    // Update diagnostic horizontal magnitude from the chosen axis
-    { extern volatile uint16_t g_diag_gyro; int32_t ah = horiz < 0 ? -horiz : horiz; g_diag_gyro = (ah > 65535) ? 65535 : (uint16_t)ah; }
 
     // Scale and convert to stick delta (preserve original scaling behavior)
     const int32_t s = cfg.gyro_sens;
