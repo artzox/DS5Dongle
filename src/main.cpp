@@ -163,10 +163,21 @@ static inline Vector3 quat_rotate(const Quaternion &q, const Vector3 &v) {
 // Runtime orientation (integrated from gyro). If a Mahony/IMU exists elsewhere
 // it can be wired into these variables instead; by default a simple integrator
 // from gyro deltas provides a usable orientation for the space transforms.
-static Quaternion g_orientation = quat_identity();
-static Quaternion g_player_reference = quat_identity();
-static bool g_player_ref_set = false;
-static bool g_prev_gyro_allowed = false;
+// Runtime orientation (integrated from gyro). If a Mahony/IMU exists elsewhere
+// it can be wired into these variables instead; by default a simple integrator
+// from gyro deltas provides a usable orientation for the space transforms.
+// Made non-static so other modules (cmd handlers) can request calibration.
+Quaternion g_orientation = quat_identity();
+Quaternion g_player_reference = quat_identity();
+bool g_player_ref_set = false;
+bool g_prev_gyro_allowed = false;
+
+// Helper to set the player reference to the current orientation (calibration)
+// Exposed so UI/commands can reset the player reference explicitly.
+void set_player_reference_now() {
+    g_player_reference = g_orientation;
+    g_player_ref_set = true;
+}
 
 static inline void integrate_orientation_from_gyro(const Vector3 &gyro, float dt) {
     // The raw gyro units are device-specific; use a small scale so integration is stable.
@@ -191,9 +202,11 @@ static Vector3 apply_gyro_traditional(const Vector3 &gyro) {
 }
 
 static Vector3 apply_gyro_yaw_roll(const Vector3 &gyro) {
-    // horizontal = yaw, vertical = roll; ignore pitch
+    // Yaw+Roll mode: horizontal aiming uses yaw (turn controller),
+    // vertical aiming uses controller roll (tilt sideways). Ignore native pitch.
+    // Map to (pitch, horiz, z) so the downstream pitch=x and horiz=y mapping works.
     // gyro layout: x = pitch(15), y = yaw(17), z = roll(19)
-    return {0, gyro.y, gyro.z};
+    return {gyro.z, gyro.y, 0};
 }
 
 static Vector3 apply_gyro_local_space(const Vector3 &gyro, const Quaternion &orientation) {

@@ -17,6 +17,9 @@
 #include "pico/bootrom.h"
 #include "audio.h"
 
+// Player-space calibration helper in main.cpp
+extern void set_player_reference_now();
+
 // spk_active (main.cpp) + audio_mic_active() (audio.cpp) are surfaced in the
 // 0xf9 command response so the config UI can display the real gated mic/speaker
 // state, reflecting the disable_mic / disable_speaker settings.
@@ -188,6 +191,11 @@ static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t cons
         case 0x32: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_invert=v; break; }
         case 0x33: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.haptics_aa=v; break; }
         case 0x65: { uint8_t v{}; if(!read_config_value(v, buffer, bufsize)) return false; new_config.gyro_space_mode=v; break; }
+        case 0x66: { // Write-only calibration command: set Player Space reference quaternion now
+            // Accept a single byte payload (ignored) to trigger calibration.
+            set_player_reference_now();
+            break;
+        }
         case 0x34: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.synth_force=v; break; }
         case 0x39: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback=v; break; }
         case 0x3a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_src=v; break; }
