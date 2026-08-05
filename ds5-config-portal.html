@@ -207,7 +207,7 @@ const SECTIONS = [
     [0x30,'gyro_sens','u8','Sensitivity','number',[1,100]],
     [0x31,'gyro_axis','u8','Horizontal source','select',{0:'Yaw (turn controller)',1:'Roll (tilt sideways)'}],
     [0x32,'gyro_invert','u8','Invert axes (0=none, 1=X, 2=Y, 3=both)','number',[0,3]],
-    [0x65,'gyro_space_mode','u8','Gyro Space Mode','select',{0:'Traditional',1:'Yaw + Roll',2:'Local Space',3:'Player Space',4:'World Space'}],
+    [0x65,'gyro_space_mode','u8','Gyro Space Mode','select',{0:'Traditional\nOriginal gyro_axis behavior',1:'Yaw + Roll\nSimple FPS gyro aiming',2:'Local Space\nController-relative aiming',3:'Player Space\nBody-relative aiming',4:'World Space\nEarth-relative aiming'}],
   ]},
   { title: 'Advanced — BT Latency (experimental)', fields: [
     [0x1b,'bt_flush_timeout','u16','BT Flush Timeout (0=off)','select',{0:'Off (reliable)',4:'~2.5ms (low latency)',6:'~3.75ms',10:'~6.25ms',16:'~10ms'}],
