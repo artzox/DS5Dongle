@@ -1,0 +1,384 @@
+name: Build firmware (reusable)
+
+# Reusable build used by build.yml and release.yml.
+# Builds enabled firmware variants through a matrix. Standard/debug always run;
+# Pico W, Waveshare and no-batt-led compile checks are optional. When
+# `upload_tag` is set, the standard UF2 and other-board ZIP are attached to
+# that GitHub Release.
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: owner/name to build. Empty = this repository.
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: Git ref (branch, tag or SHA) to build
+        required: false
+        type: string
+        default: ""
+      version:
+        description: Firmware version string (-DVERSION). Empty = CMake default ("dev")
+        required: false
+        type: string
+        default: ""
+      asset_suffix:
+        description: Suffix added before .uf2 on artifacts/release assets. Empty CI builds use -short-sha.
+        required: false
+        type: string
+        default: ""
+      upload_tag:
+        description: If set, uploads the built UF2s to this release tag
+        required: false
+        type: string
+        default: ""
+      picow:
+        description: Also build the Pico W UF2 (-DPICO_W_BUILD=ON)
+        required: false
+        type: boolean
+        default: false
+      waveshare:
+        description: Also build the Waveshare RP2350B-Plus-W UF2 (-DWAVESHARE_RP2350B_PLUS_W_BUILD=ON)
+        required: false
+        type: boolean
+        default: false
+      no_batt_led_check:
+        description: Also compile-check the no-batt-led config (-DENABLE_BATT_LED=OFF)
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PICO_SDK_REF: 2.3.0
+  TINYUSB_REF: 2d56dc533e45e4e91b15e93fdab5e22e964f328d
+  PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+  ARM_TOOLCHAIN_VERSION: 15.2.rel1
+  ARM_TOOLCHAIN_URL: https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain/15.2.rel1/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
+  ARM_TOOLCHAIN_PATH: ${{ github.workspace }}/arm-toolchain
+  APT_PACKAGES: >-
+    cmake
+    python3
+    build-essential
+    ninja-build
+
+jobs:
+  plan:
+    name: Plan firmware matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Build matrix
+        id: matrix
+        env:
+          INPUT_PICOW: ${{ inputs.picow }}
+          INPUT_WAVESHARE: ${{ inputs.waveshare }}
+          INPUT_NO_BATT_LED_CHECK: ${{ inputs.no_batt_led_check }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          variants = [
+              {
+                  "id": "standard",
+                  "name": "Standard firmware",
+                  "build_dir": "standard",
+                  "cmake_args": "",
+                  "artifact": "ds5-bridge",
+                  "upload_artifact": True,
+              },
+              {
+                  "id": "debug",
+                  "name": "Debug firmware",
+                  "build_dir": "debug",
+                  "cmake_args": "-DENABLE_SERIAL=ON -DENABLE_VERBOSE=ON -DWAKE_DEBUG=ON",
+                  "artifact": "ds5-bridge-debug",
+                  "upload_artifact": True,
+              },
+          ]
+
+          if os.environ["INPUT_PICOW"] == "true":
+              variants.append(
+                  {
+                      "id": "picow",
+                      "name": "Pico W firmware",
+                      "build_dir": "picow",
+                      "cmake_args": "-DPICO_W_BUILD=ON",
+                      "artifact": "ds5-bridge-picow",
+                      "upload_artifact": True,
+                  }
+              )
+
+          if os.environ["INPUT_WAVESHARE"] == "true":
+              variants.append(
+                  {
+                      "id": "waveshare",
+                      "name": "Waveshare RP2350B-Plus-W firmware",
+                      "build_dir": "waveshare",
+                      "cmake_args": "-DWAVESHARE_RP2350B_PLUS_W_BUILD=ON",
+                      "artifact": "ds5-bridge-waveshare",
+                      "upload_artifact": True,
+                  }
+              )
+
+          if os.environ["INPUT_NO_BATT_LED_CHECK"] == "true":
+              variants.append(
+                  {
+                      "id": "no-batt-led",
+                      "name": "No battery LED compile check",
+                      "build_dir": "no-batt-led",
+                      "cmake_args": "-DENABLE_BATT_LED=OFF",
+                      "artifact": "",
+                      "upload_artifact": False,
+                  }
+              )
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as fh:
+              fh.write("matrix=")
+              json.dump({"include": variants}, fh, separators=(",", ":"))
+              fh.write("\n")
+          PY
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repo == '' && github.repository || inputs.repo }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Resolve firmware metadata
+        id: firmware-meta
+        env:
+          IN_VER: ${{ inputs.version }}
+          IN_ASSET_SUFFIX: ${{ inputs.asset_suffix }}
+          IN_UPLOAD_TAG: ${{ inputs.upload_tag }}
+        run: |
+          v="$IN_VER"
+          # A full 40-char commit SHA (build.yml passes github.sha) is
+          # shortened to 7 chars, matching the previous build.yml behaviour.
+          if printf '%s' "$v" | grep -qE '^[0-9a-f]{40}$'; then
+            v="${v:0:7}"
+          fi
+          echo "FW_VER=$v" >> "$GITHUB_ENV"
+
+          asset_suffix="$IN_ASSET_SUFFIX"
+          if [ -z "$asset_suffix" ] && [ -z "$IN_UPLOAD_TAG" ]; then
+            asset_suffix="-$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "asset_suffix=$asset_suffix" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build dependency cache
+        id: apt-cache
+        run: |
+          mkdir -p "$RUNNER_TEMP/apt-cache/partial"
+          . /etc/os-release
+          package_hash="$(printf '%s' "$APT_PACKAGES" | sha256sum | cut -d ' ' -f 1)"
+          echo "dir=$RUNNER_TEMP/apt-cache" >> "$GITHUB_OUTPUT"
+          echo "os=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+          echo "package-hash=$package_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Cache build dependencies
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.apt-cache.outputs.dir }}
+          key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ steps.apt-cache.outputs.os }}-${{ steps.apt-cache.outputs.package-hash }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apt-${{ steps.apt-cache.outputs.os }}-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -o Dir::Cache::archives="${{ steps.apt-cache.outputs.dir }}" install --download-only -y $APT_PACKAGES
+          sudo apt-get -o Dir::Cache::archives="${{ steps.apt-cache.outputs.dir }}" install -y $APT_PACKAGES
+          sudo chmod -R a+rX "${{ steps.apt-cache.outputs.dir }}"
+
+      - name: Cache ARM toolchain
+        id: cache-arm-toolchain
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ARM_TOOLCHAIN_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-arm-toolchain-${{ env.ARM_TOOLCHAIN_VERSION }}
+
+      - name: Download ARM toolchain
+        if: steps.cache-arm-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$ARM_TOOLCHAIN_PATH"
+          curl -fsSL "$ARM_TOOLCHAIN_URL" | sudo tar -xJ -C "$ARM_TOOLCHAIN_PATH" --strip-components=1
+          sudo chmod -R a+rX "$ARM_TOOLCHAIN_PATH"
+
+      - name: Add ARM toolchain to PATH
+        run: |
+          echo "$ARM_TOOLCHAIN_PATH/bin" >> "$GITHUB_PATH"
+
+      - name: Verify ARM toolchain
+        run: |
+          which arm-none-eabi-gcc
+          arm-none-eabi-gcc --version
+
+      - name: Cache Pico SDK
+        id: cache-pico-sdk
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.PICO_SDK_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pico-sdk-${{ env.PICO_SDK_REF }}-tinyusb-${{ env.TINYUSB_REF }}
+
+      - name: Download Pico SDK
+        if: steps.cache-pico-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$PICO_SDK_REF" https://github.com/raspberrypi/pico-sdk.git "$PICO_SDK_PATH"
+          git -C "$PICO_SDK_PATH" submodule update --init --recursive
+
+      - name: Switch TinyUSB to configured ref
+        run: |
+          if git -C "$PICO_SDK_PATH/lib/tinyusb" rev-parse -q --verify "$TINYUSB_REF^{commit}" >/dev/null; then
+            TINYUSB_TARGET="$TINYUSB_REF"
+          else
+            git -C "$PICO_SDK_PATH/lib/tinyusb" fetch --depth 1 origin "$TINYUSB_REF"
+            TINYUSB_TARGET=FETCH_HEAD
+          fi
+          git -C "$PICO_SDK_PATH/lib/tinyusb" checkout --detach "$TINYUSB_TARGET"
+
+      - name: Build ${{ matrix.name }}
+        shell: bash
+        env:
+          ASSET_SUFFIX: ${{ steps.firmware-meta.outputs.asset_suffix }}
+          ARTIFACT_BASENAME: ${{ matrix.artifact }}
+          BUILD_DIR: ${{ matrix.build_dir }}
+          EXTRA_CMAKE_ARGS: ${{ matrix.cmake_args }}
+        run: |
+          VERSION_ARG=()
+          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
+
+          EXTRA_ARGS=()
+          if [ -n "$EXTRA_CMAKE_ARGS" ]; then
+            read -r -a EXTRA_ARGS <<< "$EXTRA_CMAKE_ARGS"
+          fi
+
+          cmake -S . -B "build/$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+            "${EXTRA_ARGS[@]}" \
+            "${VERSION_ARG[@]}"
+          cmake --build "build/$BUILD_DIR" --target ds5-bridge
+
+          if [ -n "$ARTIFACT_BASENAME" ]; then
+            mkdir -p artifacts
+            cp "build/$BUILD_DIR/ds5-bridge.uf2" "artifacts/${ARTIFACT_BASENAME}${ASSET_SUFFIX}.uf2"
+          fi
+
+      - name: Upload ${{ matrix.name }} artifact
+        if: matrix.upload_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}${{ steps.firmware-meta.outputs.asset_suffix }}
+          path: artifacts/${{ matrix.artifact }}${{ steps.firmware-meta.outputs.asset_suffix }}.uf2
+          archive: false
+          if-no-files-found: error
+
+  release:
+    name: Attach UF2s to release
+    needs: build
+    if: inputs.upload_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.repo == '' && github.repository || inputs.repo }}
+          ref: ${{ inputs.ref }}
+
+      - name: Download UF2 artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ds5-bridge*
+          path: artifacts
+          merge-multiple: true
+          # UF2s are uploaded with archive:false, so download them as raw files.
+          skip-decompress: true
+
+      - name: Prepare release assets
+        env:
+          ASSET_SUFFIX: ${{ inputs.asset_suffix }}
+        run: |
+          set -euo pipefail
+
+          rm -rf release-assets other-boards
+          mkdir -p release-assets other-boards
+
+          standard="artifacts/ds5-bridge${ASSET_SUFFIX}.uf2"
+          if [ ! -f "$standard" ]; then
+            echo "Missing standard firmware: $standard" >&2
+            exit 1
+          fi
+          cp "$standard" "release-assets/ds5-bridge${ASSET_SUFFIX}.uf2"
+
+          config_tool="tools/config_tool.py"
+          if [ ! -f "$config_tool" ]; then
+            echo "Missing config tool: $config_tool" >&2
+            exit 1
+          fi
+          cp "$config_tool" release-assets/config_tool.py
+
+          shopt -s nullglob
+          for uf2 in artifacts/*.uf2; do
+            name="$(basename "$uf2")"
+            case "$name" in
+              "ds5-bridge${ASSET_SUFFIX}.uf2" | "ds5-bridge-debug${ASSET_SUFFIX}.uf2")
+                continue
+                ;;
+            esac
+            cp "$uf2" "other-boards/$name"
+          done
+
+          if compgen -G "other-boards/*.uf2" > /dev/null; then
+            (cd other-boards && zip -9 -q "../release-assets/other board.zip" ./*.uf2)
+          fi
+
+      - name: Remove stale UF2 release assets
+        env:
+          ASSET_SUFFIX: ${{ inputs.asset_suffix }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          UPLOAD_TAG: ${{ inputs.upload_tag }}
+        run: |
+          set -euo pipefail
+
+          for name in \
+            "ds5-bridge.uf2" \
+            "ds5-bridge-debug${ASSET_SUFFIX}.uf2" \
+            "ds5-bridge-picow${ASSET_SUFFIX}.uf2" \
+            "ds5-bridge-waveshare${ASSET_SUFFIX}.uf2"
+          do
+            gh release delete-asset "$UPLOAD_TAG" "$name" \
+              --repo "$GH_REPO" --yes 2>/dev/null || true
+          done
+
+      - name: Attach packaged assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Pin to the workflow's own repo: when inputs.repo is set we checked
+          # out a different repo, so the local git remote must not decide this.
+          gh release upload "${{ inputs.upload_tag }}" \
+            release-assets/* \
+            --repo "${{ github.repository }}" --clobber
