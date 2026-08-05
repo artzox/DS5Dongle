@@ -184,49 +184,60 @@ static inline void integrate_orientation_from_gyro(const Vector3 &gyro, float dt
     if (n > 0.0f) { g_orientation.w /= n; g_orientation.x /= n; g_orientation.y /= n; g_orientation.z /= n; }
 }
 
+// Separate gyro-space transform helpers to keep each mode self-contained
+static Vector3 apply_gyro_traditional(const Vector3 &gyro) {
+    // Preserve exact original behaviour: raw gyro passthrough
+    return gyro;
+}
+
+static Vector3 apply_gyro_yaw_roll(const Vector3 &gyro) {
+    // horizontal = yaw, vertical = roll; ignore pitch
+    // gyro layout: x = pitch(15), y = yaw(17), z = roll(19)
+    return {0, gyro.y, gyro.z};
+}
+
+static Vector3 apply_gyro_local_space(const Vector3 &gyro, const Quaternion &orientation) {
+    // Local space: express angular velocity in controller-local axes.
+    // Rotate the world-referenced gyro into the controller-local frame using
+    // the inverse of the current orientation so movements follow the device axes.
+    Quaternion inv = quat_inverse(orientation);
+    return quat_rotate(inv, gyro);
+}
+
+static Vector3 apply_gyro_player_space(const Vector3 &gyro, const Quaternion &orientation) {
+    // Player space: compute rotation relative to the stored player reference
+    // quaternion captured when aiming starts. Map that relative rotation into
+    // a small-angle vector and scale into raw-like units.
+    if (!g_player_ref_set) return {0,0,0};
+    const Quaternion rel = quat_mul(orientation, quat_inverse(g_player_reference));
+    const float vx = rel.x, vy = rel.y, vz = rel.z;
+    const float vm = sqrtf(vx*vx + vy*vy + vz*vz);
+    if (vm < 1e-8f) return {0,0,0};
+    const float angle = 2.0f * asinf(fminf(1.0f, vm));
+    const float ax = vx / vm, ay = vy / vm, az = vz / vm;
+    const float scale = 5000.0f; // converts radians -> raw-ish units
+    const int32_t horiz = (int32_t)(ay * angle * scale);
+    const int32_t pitch = (int32_t)(ax * angle * scale);
+    return {pitch, horiz, 0};
+}
+
+static Vector3 apply_gyro_world_space(const Vector3 &gyro, const Quaternion &orientation) {
+    // World space: rotate device-frame angular velocity into world coordinates
+    // so that game left/right/up/down correspond to world axes regardless of
+    // device orientation. Use inverse orientation to map device->world.
+    Quaternion inv = quat_inverse(orientation);
+    return quat_rotate(inv, gyro);
+}
+
+// Dispatcher kept for compatibility with earlier callsites
 static Vector3 apply_gyro_space(Vector3 gyro, const Quaternion &orientation, uint8_t mode) {
     switch (mode) {
-        case GYRO_SPACE_TRADITIONAL:
-            return gyro; // exact original behaviour
-        case GYRO_SPACE_YAW_ROLL: {
-            // horizontal = yaw, vertical = roll; ignore pitch
-            // gyro layout: x = pitch(15), y = yaw(17), z = roll(19)
-            return {0, gyro.y, gyro.z};
-        }
-        case GYRO_SPACE_LOCAL: {
-            // local space: rotate into controller-local frame (inverse of orientation)
-            Quaternion inv = quat_inverse(orientation);
-            return quat_rotate(inv, gyro);
-        }
-        case GYRO_SPACE_PLAYER: {
-            if (!g_player_ref_set) return gyro;
-            // relative rotation: current * inverse(start)
-            const Quaternion rel = quat_mul(orientation, quat_inverse(g_player_reference));
-            // Convert relative quaternion to small-angle vector approximation.
-            // Use vector part as axis*sin(theta/2); convert back to an angle-like measure.
-            const float vx = rel.x, vy = rel.y, vz = rel.z, vw = rel.w;
-            // angle ~ 2 * asin(|v|)
-            const float vm = sqrtf(vx*vx + vy*vy + vz*vz);
-            const float angle = 2.0f * asinf(fminf(1.0f, vm));
-            if (vm < 1e-8f) return {0,0,0};
-            const float ax = vx / vm, ay = vy / vm, az = vz / vm;
-            // Map relative rotation to a comparable raw-scale vector (heuristic)
-            const float scale = 5000.0f; // converts radians -> raw-ish units
-            // horizontal -> yaw (ay * angle), vertical -> pitch (ax * angle)
-            const int32_t horiz = (int32_t)(ay * angle * scale);
-            const int32_t pitch = (int32_t)(ax * angle * scale);
-            return {pitch, horiz, 0};
-        }
-        case GYRO_SPACE_WORLD: {
-            // world space: rotate controller gyro into world coordinates independent
-            // of how the controller is held. Rotate the device-frame angular velocity
-            // into the world frame using the inverse of the current orientation so
-            // left/right/up/down map to the game's world axes consistently.
-            Quaternion inv = quat_inverse(orientation);
-            return quat_rotate(inv, gyro);
-        }
-        default:
-            return gyro;
+        case GYRO_SPACE_TRADITIONAL: return apply_gyro_traditional(gyro);
+        case GYRO_SPACE_YAW_ROLL:    return apply_gyro_yaw_roll(gyro);
+        case GYRO_SPACE_LOCAL:       return apply_gyro_local_space(gyro, orientation);
+        case GYRO_SPACE_PLAYER:      return apply_gyro_player_space(gyro, orientation);
+        case GYRO_SPACE_WORLD:       return apply_gyro_world_space(gyro, orientation);
+        default: return gyro;
     }
 }
 
@@ -258,9 +269,6 @@ static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
     const int32_t raw_yaw = rd16(17);
     const int32_t raw_roll = rd16(19);
 
-    // Diagnostic uses the horizontal axis chosen by the old axis config for parity
-    int32_t horiz_raw = (cfg.gyro_axis == 1) ? raw_roll /* roll */ : raw_yaw /* yaw */;
-    { extern volatile uint16_t g_diag_gyro; int32_t ah = horiz_raw < 0 ? -horiz_raw : horiz_raw; g_diag_gyro = (ah > 65535) ? 65535 : (uint16_t)ah; }
 
     // Determine whether gyro is allowed (activation gates passed). We'll use this
     // to latch the player reference quaternion when PLAYER mode starts.
@@ -289,10 +297,22 @@ static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
 
     // Apply small deadzone as before but on transformed values
     int32_t pitch = transformed.x;
-    int32_t horiz = (cfg.gyro_axis == 1) ? transformed.z : transformed.y;
+    int32_t horiz;
+    if (cfg.gyro_space_mode == GYRO_SPACE_TRADITIONAL) {
+        // Preserve legacy axis selection only for Traditional mode
+        horiz = (cfg.gyro_axis == 1) ? transformed.z : transformed.y;
+    } else {
+        // For space modes, ignore old gyro_axis mapping and use the 'yaw-like'
+        // horizontal component from the transform consistently.
+        horiz = transformed.y;
+    }
+
     if (horiz > -12 && horiz < 12) horiz = 0;
     if (pitch > -12 && pitch < 12) pitch = 0;
     if (horiz == 0 && pitch == 0) return;
+
+    // Update diagnostic horizontal magnitude from the chosen axis
+    { extern volatile uint16_t g_diag_gyro; int32_t ah = horiz < 0 ? -horiz : horiz; g_diag_gyro = (ah > 65535) ? 65535 : (uint16_t)ah; }
 
     // Scale and convert to stick delta (preserve original scaling behavior)
     const int32_t s = cfg.gyro_sens;
