@@ -20,6 +20,9 @@
 // Player-space calibration helper in main.cpp
 extern void set_player_reference_now();
 
+// World-space calibration helper in main.cpp
+extern void set_world_reference_now();
+
 // spk_active (main.cpp) + audio_mic_active() (audio.cpp) are surfaced in the
 // 0xf9 command response so the config UI can display the real gated mic/speaker
 // state, reflecting the disable_mic / disable_speaker settings.
@@ -194,6 +197,11 @@ static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t cons
         case 0x66: { // Write-only calibration command: set Player Space reference quaternion now
             // Accept a single byte payload (ignored) to trigger calibration.
             set_player_reference_now();
+            break;
+        }
+        case 0x67: { // Write-only calibration command: set World Space reference orientation now
+            // Accept a single byte payload (ignored) to trigger World Space calibration.
+            set_world_reference_now();
             break;
         }
         case 0x34: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.synth_force=v; break; }
