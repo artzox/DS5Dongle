@@ -190,6 +190,8 @@ struct __attribute__((packed)) Config_body {
     //   2 = custom when gated   - gate engaged -> custom effect; otherwise sliders
     uint8_t  ce_r2_yield;
     uint8_t  ce_l2_yield;
+    // Gyro space transform: 0=Traditional, 1=Yaw+Roll, 2=Local, 3=Player, 4=World
+    uint8_t  gyro_space_mode;
 };
 
 struct __attribute__((packed)) Config {
