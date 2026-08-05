@@ -31,7 +31,7 @@ bool is_dse = false;
 
 // 编译期保护
 // 判断Config结构体是否能放进flash 256bytes
-static_assert(sizeof(Config) <= FLASH_PAGE_SIZE);
+static_assert(sizeof(Config) <= FLASH_SECTOR_SIZE);
 // 配置区起始地址必须按 flash sector 对齐。
 static_assert(CONFIG_FLASH_OFFSET % FLASH_SECTOR_SIZE == 0);
 
@@ -259,7 +259,7 @@ static void config_save_flash_op(void *param) {
 
 bool config_save() {
     config.crc32 = calc_config_crc(config);
-    alignas(4) uint8_t page[FLASH_PAGE_SIZE];
+    alignas(4) uint8_t page[FLASH_SECTOR_SIZE];
     memset(page, 0xff, sizeof(page));
     memcpy(page, &config, sizeof(Config));
 
