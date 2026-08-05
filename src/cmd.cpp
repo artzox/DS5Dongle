@@ -187,6 +187,7 @@ static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t cons
         case 0x31: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_axis=v; break; }
         case 0x32: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.gyro_invert=v; break; }
         case 0x33: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.haptics_aa=v; break; }
+        case 0x65: { uint8_t v{}; if(!read_config_value(v, buffer, bufsize)) return false; new_config.gyro_space_mode=v; break; }
         case 0x34: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.synth_force=v; break; }
         case 0x39: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback=v; break; }
         case 0x3a: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.at_pushback_src=v; break; }
@@ -368,6 +369,7 @@ static bool get_config_field_from(const Config_body &config, uint8_t field_id, u
         case 0x36: { extern volatile uint8_t g_diag_synth; return write_config_value(buffer, bufsize, (uint8_t)g_diag_synth); }
         case 0x37: { extern volatile uint16_t g_diag_ch01_peak; return write_config_value(buffer, bufsize, (uint16_t)g_diag_ch01_peak); }
         case 0x38: { extern volatile uint16_t g_diag_ch23_peak; return write_config_value(buffer, bufsize, (uint16_t)g_diag_ch23_peak); }
+        case 0x65: { return write_config_value(buffer, bufsize, config.gyro_space_mode); }
         // Read-only firmware version (no write handlers on purpose).
         case 0x7d: return write_config_value(buffer, bufsize, FW_VER_MAJOR);
         case 0x7e: return write_config_value(buffer, bufsize, FW_VER_MINOR);
