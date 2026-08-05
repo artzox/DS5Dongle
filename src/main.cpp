@@ -218,8 +218,12 @@ static Vector3 apply_gyro_space(Vector3 gyro, const Quaternion &orientation, uin
             return {pitch, horiz, 0};
         }
         case GYRO_SPACE_WORLD: {
-            // world space: rotate controller gyro into world coordinates
-            return quat_rotate(orientation, gyro);
+            // world space: rotate controller gyro into world coordinates independent
+            // of how the controller is held. Rotate the device-frame angular velocity
+            // into the world frame using the inverse of the current orientation so
+            // left/right/up/down map to the game's world axes consistently.
+            Quaternion inv = quat_inverse(orientation);
+            return quat_rotate(inv, gyro);
         }
         default:
             return gyro;
