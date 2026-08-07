@@ -203,6 +203,12 @@ struct __attribute__((packed)) Config_body {
     //   0 = ch0/1 (default, previous behaviour)
     //   1 = ch2/3 (requires a 4-channel stream; falls back to ch0/1 on stereo)
     uint8_t  ah_dsp_source;
+    // Right-stick inversion (v1.18.19). Inverts the PHYSICAL right stick axes in
+    // the input report the host sees, independent of gyro aiming (which has its
+    // own gyro_invert). Applied before the gyro delta is added, so the two
+    // compose: invert the stick here, and align gyro separately if used. Same
+    // bit layout as gyro_invert.
+    uint8_t  rstick_invert; // bit0 = invert X (horizontal), bit1 = invert Y (vertical)
 };
 
 struct __attribute__((packed)) Config {
