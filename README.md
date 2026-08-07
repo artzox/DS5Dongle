@@ -1,5 +1,7 @@
 # DS5Dongle — Audio Auto-Haptics Edition
 
+https://appendinocom.github.io/DS5Dongle-Gyro-Focused/
+
 **Version 1.18.18**
 
 A firmware modification for the [DS5Dongle](https://github.com/awalol/DS5Dongle)
