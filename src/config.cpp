@@ -207,6 +207,7 @@ void config_valid() {
     if (body->gyro_sens < 1 || body->gyro_sens > 100) body->gyro_sens = 50;
     if (body->gyro_axis > 1) body->gyro_axis = 0;
     if (body->gyro_invert > 3) body->gyro_invert = 0;
+    if (body->rstick_invert > 3) body->rstick_invert = 0; // fresh-flash 0xFF -> off
     // Native-haptics smoothing: 0 is invalid so a fresh config defaults to Light (2).
     if (body->haptics_aa < 1 || body->haptics_aa > 3) body->haptics_aa = 2;
     if (body->synth_force > 1) body->synth_force = 0;

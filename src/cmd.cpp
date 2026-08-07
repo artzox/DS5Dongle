@@ -214,6 +214,7 @@ static bool set_field_in(Config_body &new_config, uint8_t field_id, uint8_t cons
         case 0x55: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.mix_native_level=v; break; }
         case 0x63: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.mix_native_filter=v; break; }
         case 0x64: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ah_dsp_source=v; break; }
+        case 0x65: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.rstick_invert=v; break; }
         case 0x56: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.effect_leak_max_burst=v; break; }
         case 0x57: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_enable=v; break; }
         case 0x58: { uint8_t v{}; if(!read_config_value(v,buffer,bufsize))return false; new_config.ce_r2_condition=v; break; }
@@ -339,6 +340,7 @@ static bool get_config_field_from(const Config_body &config, uint8_t field_id, u
         case 0x55: return write_config_value(buffer, bufsize, config.mix_native_level);
         case 0x63: return write_config_value(buffer, bufsize, config.mix_native_filter);
         case 0x64: return write_config_value(buffer, bufsize, config.ah_dsp_source);
+        case 0x65: return write_config_value(buffer, bufsize, config.rstick_invert);
         // Read-only diagnostics: the rumble motor values the firmware is
         // currently receiving from the host. Non-zero here while a game
         // vibrates proves the rumble arrives as motor values (and is therefore

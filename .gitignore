@@ -1,5 +1,29 @@
-build
-.deps
-.vscode
-.idea
-example
+# Build directories
+/build*/
+/.deps/
+
+# CMake output
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Firmware/build artifacts
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+*.lst
+
+# Local editor/project files
+/.vscode/
+/.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Local examples/scratch
+/example/

@@ -115,9 +115,10 @@ void __not_in_flash_func(interrupt_loop)() {
     }
 }
 
-// --- Gyro -> right-stick aiming ---------------------------------------------
-// Adds the controller's angular velocity onto the right stick in the input
-// report the PC sees, so ANY game gets gyro aiming with zero PC software
+// --- Right-stick inversion + Gyro -> right-stick aiming ----------------------
+// First optionally inverts the physical right stick (rstick_invert), then adds
+// the controller's angular velocity onto the right stick in the input report the
+// PC sees, so ANY game gets gyro aiming with zero PC software
 // (DSX needs its app running for this; here it lives in the dongle).
 // Integer-only so it is safe inside the report critical section.
 // Report offsets: RightStickX=2, RightStickY=3, TriggerLeft=4,
@@ -126,6 +127,12 @@ volatile uint16_t g_diag_gyro = 0; // |horizontal gyro raw|, field 0x35
 
 static inline void __not_in_flash_func(apply_gyro_stick)(uint8_t *d) {
     const auto &cfg = get_config();
+    // Right-stick inversion (v1.18.19): flip the PHYSICAL stick axes first, so it
+    // applies whether or not gyro is on. Center ~128; 255-v is the standard stick
+    // flip (1-LSB center offset, imperceptible). The gyro delta, with its own
+    // gyro_invert, is added on top below - the two controls stay independent.
+    if (cfg.rstick_invert & 1) d[2] = (uint8_t)(255 - d[2]); // RightStickX
+    if (cfg.rstick_invert & 2) d[3] = (uint8_t)(255 - d[3]); // RightStickY
     if (cfg.gyro_mode == 0) return;
     // Activation schemes (industry set: ADS-gated, always-on, touch-enable, ratchet):
     //   1 = only while L2 (aim) held past ~12%

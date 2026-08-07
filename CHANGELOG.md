@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [1.18.19] — 2026-08-07
+
+### Added
+- **Right-stick inversion.** A new Right Stick card (on the Gyro / Stick tab)
+  inverts the physical right stick's X and/or Y axis via per-axis checkboxes,
+  independent of gyro aiming. The flip is applied to the input report the host
+  sees, so it works in any game with no PC software. Off by default, and safe to
+  load onto existing configs — the new field defaults to off.
+
+### Changed
+- **Gyro aim inversion is now two checkboxes** (Invert X / Invert Y) instead of a
+  0–3 "invert axes" number field. Same stored setting and behaviour, just a
+  clearer control: existing values map straight across (1 = X, 2 = Y, 3 = both).
+
 ## [1.18.18] — 2026-08-04
 ### Fixed
 - slot-activate script fixed to load slots 17-24, was broken and only loaded 1-16 with the previous release,
